@@ -1,0 +1,9 @@
+bin/
+!external/streamline/bin
+build*/
+external/dxc/
+assets/
+.vs
+.vscode
+*.sublime-project
+*.sublime-workspace

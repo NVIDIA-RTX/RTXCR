@@ -1,0 +1,15 @@
+[submodule "external/donut"]
+	path = external/donut
+	url = https://github.com/NVIDIA-RTX/Donut.git
+[submodule "external/nvapi"]
+	path = external/nvapi
+	url = https://github.com/NVIDIA/nvapi.git
+[submodule "external/streamline"]
+	path = external/streamline
+	url = https://github.com/NVIDIAGameWorks/Streamline.git
+[submodule "libraries/rtxcr/material"]
+	path = libraries/rtxcr/material
+	url = https://github.com/NVIDIA-RTX/RTXCR-Material-Library.git
+[submodule "libraries/rtxcr/geometry"]
+	path = libraries/rtxcr/geometry
+	url = https://github.com/NVIDIA-RTX/RTXCR-Geometry-Library.git
