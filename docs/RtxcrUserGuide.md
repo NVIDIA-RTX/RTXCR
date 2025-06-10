@@ -83,8 +83,8 @@ To use the GUI parameters, tick "Enable Hair Material Override"
 |    Operator  |   Tonemapping operator, support Reinhard and Linear   |
 |    Clamp  |   Clamp final output color to 0-1  |
 
-[RTXCR Hair Guide]: docs/RtxcrHairGuide.md
-[RTXCR SSS Guide]: docs/RtxcrSssGuide.md
+[RTXCR Hair Guide]: RtxcrHairGuide.md
+[RTXCR SSS Guide]:  RtxcrSssGuide.md
 
 ## Cmdline Options
 
