@@ -50,6 +50,7 @@ void GBufferPass::createGBufferPassBindingLayout()
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(1), // instance
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(2), // geometry
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(3), // materials
+        nvrhi::BindingLayoutItem::StructuredBuffer_SRV(4), // Instance Mask for Morph Target
         nvrhi::BindingLayoutItem::Sampler(0),
         nvrhi::BindingLayoutItem::TypedBuffer_UAV(RTXCR_NVAPI_SHADER_EXT_SLOT), // for nvidia extensions
     };
@@ -130,7 +131,11 @@ bool GBufferPass::RecreateGBufferPassPipeline(const nvrhi::BindingLayoutHandle r
     };
 
     pipelineDesc.maxPayloadSize = max(sizeof(RayPayload), sizeof(ShadowRayPayload));
-    pipelineDesc.hlslExtensionsUAV = int32_t(RTXCR_NVAPI_SHADER_EXT_SLOT);
+    if (m_device->queryFeatureSupport(nvrhi::Feature::LinearSweptSpheres))
+    {
+        // We only enable hlslExtensionsUAV for the devices that support LSS
+        pipelineDesc.hlslExtensionsUAV = int32_t(RTXCR_NVAPI_SHADER_EXT_SLOT);
+    }
 
     m_pipelinePermutation.pipeline = m_device->createRayTracingPipeline(pipelineDesc);
     m_pipelinePermutation.shaderTable = m_pipelinePermutation.pipeline->createShaderTable();
@@ -145,12 +150,13 @@ bool GBufferPass::RecreateGBufferPassPipeline(const nvrhi::BindingLayoutHandle r
 void GBufferPass::Dispatch(
     nvrhi::CommandListHandle commandList,
     const ResourceManager::PathTracerResources& renderTargets,
+    const ResourceManager::DenoiserResources& denoiserResources,
     const nvrhi::SamplerHandle pathTracingSampler,
     std::shared_ptr<donut::engine::DescriptorTableManager> descriptorTable,
     const dm::uint2 renderSize,
     const bool isEnvMapUpdated)
 {
-    if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS() || dm::any(m_renderSize != renderSize) || isEnvMapUpdated)
+    if (m_accelerationStructure->IsRebuildAS() || dm::any(m_renderSize != renderSize) || isEnvMapUpdated)
     {
         m_device->waitForIdle();
 
@@ -162,6 +168,7 @@ void GBufferPass::Dispatch(
             nvrhi::BindingSetItem::StructuredBuffer_SRV(1, m_scene->GetNativeScene()->GetInstanceBuffer()),
             nvrhi::BindingSetItem::StructuredBuffer_SRV(2, m_scene->GetNativeScene()->GetGeometryBuffer()),
             nvrhi::BindingSetItem::StructuredBuffer_SRV(3, m_scene->GetNativeScene()->GetMaterialBuffer()),
+            nvrhi::BindingSetItem::StructuredBuffer_SRV(4, renderTargets.instanceMorphTargetMetaDataBuffer),
             nvrhi::BindingSetItem::Sampler(0, pathTracingSampler),
             nvrhi::BindingSetItem::TypedBuffer_UAV(RTXCR_NVAPI_SHADER_EXT_SLOT, nullptr), // for nvidia extensions
         };

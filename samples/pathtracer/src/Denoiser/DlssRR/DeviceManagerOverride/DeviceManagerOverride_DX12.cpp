@@ -63,7 +63,7 @@ freely, subject to the following restrictions:
 
 #include <sstream>
 
-#include <sl.h>
+#include "../sl_wrapper.h"
 
 #include "DeviceManagerOverride.h"
 
@@ -110,6 +110,9 @@ class DeviceManagerOverride_DX12 : public donut::app::DeviceManager
     std::string                                 m_RendererString;
 
 public:
+    DeviceManagerOverride_DX12() = default;
+    virtual ~DeviceManagerOverride_DX12() = default;
+
     const char *GetRendererString() const override
     {
         return m_RendererString.c_str();
@@ -464,9 +467,6 @@ bool DeviceManagerOverride_DX12::CreateDevice()
     m_FullScreenDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE;
     m_FullScreenDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
     m_FullScreenDesc.Windowed = !m_DeviceParams.startFullscreen;
-    
-
-    // STREAMLINE
 
     // Get the proxy swapchain using the intercepted API 
     RefCountPtr<IDXGISwapChain1> pSwapChain1_base;
@@ -602,7 +602,9 @@ void DeviceManagerOverride_DX12::ReleaseRenderTargets()
 
     // Set the events so that WaitForSingleObject in OneFrame will not hang later
     for(auto e : m_FrameFenceEvents)
+    {
         SetEvent(e);
+    }
 
     // Release the old buffers because ResizeBuffers requires that
     m_RhiSwapChainBuffers.clear();
@@ -642,20 +644,19 @@ void DeviceManagerOverride_DX12::ResizeSwapChain()
 
 bool DeviceManagerOverride_DX12::BeginFrame()
 {
-
-#ifdef DLSSG_ALLOWED // NDA ONLY DLSS-G DLSS_G Release
-    bool turn_on;
+    bool turnOnDlssg = true;
 
     // STREAMLINE
-    if (SLWrapper::Get().Get_DLSSG_SwapChainRecreation(turn_on)) {
-
+    if (SLWrapper::Get_DLSSG_SwapChainRecreation(turnOnDlssg))
+    {
         waitForQueue();
 
-        SLWrapper::Get().CleanupDLSSG();
+        SLWrapper::CleanupDLSSG();
 
         // Get new sizes
         DXGI_SWAP_CHAIN_DESC1 newSwapChainDesc;
-        if (SUCCEEDED(m_NativeSwapChain->GetDesc1(&newSwapChainDesc))) {
+        if (SUCCEEDED(m_NativeSwapChain->GetDesc1(&newSwapChainDesc)))
+        {
             m_SwapChainDesc.Width = newSwapChainDesc.Width;
             m_SwapChainDesc.Height = newSwapChainDesc.Height;
             m_DeviceParams.backBufferWidth = newSwapChainDesc.Width;
@@ -671,35 +672,41 @@ bool DeviceManagerOverride_DX12::BeginFrame()
         m_SwapChainProxy = nullptr;
         m_NativeSwapChain = nullptr;
 
-        // If we turn off dlssg, then unload dlssg featuree
-        if (turn_on) 
-            SLWrapper::Get().FeatureLoad(sl::kFeatureDLSS_G, true);
-        else {
-            SLWrapper::Get().FeatureLoad(sl::kFeatureDLSS_G, false);
+        // If we turn off dlssg, then unload dlssg feature
+        if (turnOnDlssg)
+        {
+            SLWrapper::FeatureLoad(sl::kFeatureDLSS_G, true);
+        }
+        else
+        {
+            SLWrapper::FeatureLoad(sl::kFeatureDLSS_G, false);
         }
 
-        m_UseProxySwapchain = turn_on;
+        m_UseProxySwapchain = turnOnDlssg;
 
         // Recreate Swapchain and resources 
+
         RefCountPtr<IDXGISwapChain1> pSwapChain1_base;
         auto hr = m_FactoryProxy->CreateSwapChainForHwnd(m_GraphicsQueue, m_hWnd, &m_SwapChainDesc, &m_FullScreenDesc, nullptr, &pSwapChain1_base);
         if (hr != S_OK)  donut::log::fatal("CreateSwapChainForHwnd failed");
         hr = pSwapChain1_base->QueryInterface(IID_PPV_ARGS(&m_SwapChainProxy));
         if (hr != S_OK)  donut::log::fatal("QueryInterface failed");
-        SLWrapper::Get().ProxyToNative(m_SwapChainProxy, (void**)&m_NativeSwapChain);
 
-        if (!CreateRenderTargets()) 
+        // Get the native swap chain by requesting it explicitly
+        auto res = slGetNativeInterface(m_SwapChainProxy, reinterpret_cast<void**>(&m_NativeSwapChain));
+
+        if (!CreateRenderTargets())
+        {
             donut::log::fatal("CreateRenderTarget failed");
+        }
 
         BackBufferResized();
 
         // Reload DLSSG
-        SLWrapper::Get().FeatureLoad(sl::kFeatureDLSS_G, true); 
-        SLWrapper::Get().Quiet_DLSSG_SwapChainRecreation();
-
+        SLWrapper::FeatureLoad(sl::kFeatureDLSS_G, true);
+        SLWrapper::Quiet_DLSSG_SwapChainRecreation();
     }
     else
-#endif DLSSG_ALLOWED // NDA ONLY DLSS-G DLSS_G Release
     {
         DXGI_SWAP_CHAIN_DESC1 newSwapChainDesc;
         DXGI_SWAP_CHAIN_FULLSCREEN_DESC newFullScreenDesc;
@@ -725,10 +732,7 @@ bool DeviceManagerOverride_DX12::BeginFrame()
             }
 
         }
-
     }
-    // STREAMLINE: hook function using proxy api object
-    auto bufferIndex = m_SwapChainProxy->GetCurrentBackBufferIndex();
 
     return true;
 }

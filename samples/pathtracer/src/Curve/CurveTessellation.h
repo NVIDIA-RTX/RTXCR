@@ -53,9 +53,24 @@ public:
 
     void convertToLinearSweptSpheres(const std::vector<std::shared_ptr<MeshInstance>>& meshInstances);
 
-    void replacingSceneMesh(const TessellationType tessellationType, const std::vector<std::shared_ptr<MeshInstance>>& meshInstances);
+    void replacingSceneMesh(nvrhi::IDevice* device, donut::engine::DescriptorTableManager* descriptorTable, const TessellationType tessellationType, const std::vector<std::shared_ptr<MeshInstance>>& meshInstances);
 
-    inline const std::vector<rtxcr::geometry::LineSegment>& GetCurvesLineSegments(const uint32_t meshIndex) const { return m_curvesLineSegments[meshIndex]; }
+    void swapDynamicVertexBuffer();
+
+    inline void clear()
+    {
+        bufferGroupPrevVertexBufferMap.clear();
+    }
+
+    inline const std::vector<rtxcr::geometry::LineSegment>& GetCurvesLineSegments(const std::string& meshName) const
+    {
+        static const std::vector<rtxcr::geometry::LineSegment> kEmpty;
+        auto it = m_curvesLineSegmentsIndexMap.find(meshName);
+        if (it != m_curvesLineSegmentsIndexMap.end()) {
+            return m_curvesLineSegments[it->second];
+        }
+        return kEmpty;
+    }
 
 private:
     void convertCurveLineStripsToLineSegments(const std::vector<std::shared_ptr<MeshInstance>>& meshInstances);
@@ -65,7 +80,14 @@ private:
         std::shared_ptr<BufferGroup> buffers,
         const std::vector<std::shared_ptr<MeshGeometry>>& geometries);
 
+    void createDynamicVertexBuffer(
+        nvrhi::IDevice* device,
+        donut::engine::DescriptorTableManager* descriptorTable,
+        BufferGroup* meshBuffers,
+        std::string& meshName);
+
     std::vector<std::vector<rtxcr::geometry::LineSegment>> m_curvesLineSegments;
+    std::unordered_map<std::string, uint32_t> m_curvesLineSegmentsIndexMap;
 
     std::vector<std::vector<MeshGeometry>> m_curveOriginalGeometryInfoCache;
 
@@ -75,6 +97,13 @@ private:
         std::vector<MeshGeometry> geometries;
     };
     std::vector<CurveMeshBuffersCache> m_curveMeshBuffersCache[(uint32_t)TessellationType::Count];
+
+    struct VertexBufferDescriptor
+    {
+        nvrhi::BufferHandle vertexBuffer;
+        std::shared_ptr<DescriptorHandle> descriptor;
+    };
+    std::unordered_map<BufferGroup*, VertexBufferDescriptor> bufferGroupPrevVertexBufferMap;
 
     const UIData& m_ui;
 };

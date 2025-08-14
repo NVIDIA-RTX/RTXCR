@@ -12,6 +12,8 @@
 #include "shared.h"
 #include "../Ui/PathtracerUi.h"
 
+#include <nvrhi/common/misc.h>
+
 namespace
 {
     // Generate a vector that is orthogonal to the input vector
@@ -53,6 +55,7 @@ namespace
     }
 } // namespace
 
+
 CurveTessellation::CurveTessellation(const std::vector<std::shared_ptr<MeshInstance>>& meshInstances, const UIData& ui)
 : m_curveOriginalGeometryInfoCache(meshInstances.size())
 , m_ui(ui)
@@ -83,12 +86,8 @@ void CurveTessellation::convertToTrianglePolyTubes(const std::vector<std::shared
             // RTXCR_CURVE_POLYTUBE_ORDER faces with 2 triangles (3 vertices each)
             const uint32_t numVerticesPerSegment = RTXCR_CURVE_POLYTUBE_ORDER * 2 * 3;
             // Assumption: All curve geometries in same mesh have same primitive type, so we just check the type of first geometry
-            const uint32_t totalIndices = (mesh->geometries[0]->type == MeshGeometryPrimitiveType::Lines) ?
-                m_curvesLineSegments[meshIndex].size() * 2 * numVerticesPerSegment :
-                m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
-            const uint32_t totalVertices = (mesh->geometries[0]->type == MeshGeometryPrimitiveType::Lines) ?
-                m_curvesLineSegments[meshIndex].size() * 2 * numVerticesPerSegment :
-                m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
+            const uint32_t totalIndices = m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
+            const uint32_t totalVertices = m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
 
             meshBuffers->indexData.resize(totalIndices);
             meshBuffers->positionData.resize(totalVertices);
@@ -108,16 +107,19 @@ void CurveTessellation::convertToTrianglePolyTubes(const std::vector<std::shared
                 const auto& geometryCache = meshGeometryCache[geometryIndex];
                 auto& geometry = mesh->geometries[geometryIndex];
 
-                const uint32_t geometryNumIndices = (geometryCache.numIndices - 1) * numVerticesPerSegment;
-                const uint32_t geometryNumVertices = (geometryCache.numVertices - 1) * numVerticesPerSegment;
+                const uint32_t indexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
+                    geometryCache.numIndices / 2 : geometryCache.numIndices - 1;
+                const uint32_t vertexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
+                    geometryCache.numVertices / 2 : geometryCache.numVertices - 1;
+
+                const uint32_t geometryNumIndices = indexSize * numVerticesPerSegment;
+                const uint32_t geometryNumVertices = vertexSize * numVerticesPerSegment;
                 geometry->numIndices = geometryNumIndices;
                 geometry->numVertices = geometryNumVertices;
                 geometry->indexOffsetInMesh = indexOffsetInMesh;
                 geometry->vertexOffsetInMesh = vertexOffsetInMesh;
                 geometry->globalGeometryIndex = geometryIndex;
 
-                const uint32_t indexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
-                    geometryCache.numIndices / 2 : geometryCache.numIndices - 1;
                 for (uint32_t index = 0; index < indexSize; ++index)
                 {
                     const auto& line = lineSegments[globalIndex];
@@ -212,12 +214,8 @@ void CurveTessellation::convertToDisjointOrthogonalTriangleStrips(const std::vec
             // 4 triangles (3 vertices each)
             const uint32_t numVerticesPerSegment = 4 * 3;
             // Assumption: All curve geometries in same mesh have same primitive type, so we just check the type of first geometry
-            const uint32_t totalIndices = (mesh->geometries[0]->type == MeshGeometryPrimitiveType::Lines) ?
-                m_curvesLineSegments[meshIndex].size() * 2 * numVerticesPerSegment :
-                m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
-            const uint32_t totalVertices = (mesh->geometries[0]->type == MeshGeometryPrimitiveType::Lines) ?
-                m_curvesLineSegments[meshIndex].size() * 2 * numVerticesPerSegment :
-                m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
+            const uint32_t totalIndices = m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
+            const uint32_t totalVertices = m_curvesLineSegments[meshIndex].size() * numVerticesPerSegment;
 
             meshBuffers->indexData.resize(totalIndices);
             meshBuffers->positionData.resize(totalVertices);
@@ -237,16 +235,19 @@ void CurveTessellation::convertToDisjointOrthogonalTriangleStrips(const std::vec
                 const auto& geometryCache = meshGeometryCache[geometryIndex];
                 auto& geometry = mesh->geometries[geometryIndex];
 
-                const uint32_t geometryNumIndices = (geometryCache.numIndices - 1) * numVerticesPerSegment;
-                const uint32_t geometryNumVertices = (geometryCache.numVertices - 1) * numVerticesPerSegment;
+                const uint32_t indexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
+                    geometryCache.numIndices / 2 : geometryCache.numIndices - 1;
+                const uint32_t vertexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
+                    geometryCache.numVertices / 2 : geometryCache.numVertices - 1;
+
+                const uint32_t geometryNumIndices = indexSize * numVerticesPerSegment;
+                const uint32_t geometryNumVertices = vertexSize * numVerticesPerSegment;
                 geometry->numIndices = geometryNumIndices;
                 geometry->numVertices = geometryNumVertices;
                 geometry->indexOffsetInMesh = indexOffsetInMesh;
                 geometry->vertexOffsetInMesh = vertexOffsetInMesh;
                 geometry->globalGeometryIndex = geometryIndex;
 
-                const uint32_t indexSize = (geometry->type == MeshGeometryPrimitiveType::Lines) ?
-                    geometryCache.numIndices / 2 : geometryCache.numIndices - 1;
                 for (uint32_t index = 0; index < indexSize; ++index)
                 {
                     const auto& line = lineSegments[globalIndex];
@@ -369,8 +370,8 @@ void CurveTessellation::convertToLinearSweptSpheres(const std::vector<std::share
                 {
                     meshBuffers->positionData[2 * globalIndex] = float3(lineSegments[globalIndex].vertices[0].position);
                     meshBuffers->positionData[2 * globalIndex + 1] = float3(lineSegments[globalIndex].vertices[1].position);
-                    meshBuffers->radiusData[2 * globalIndex] = lineSegments[globalIndex].vertices[0].radius;
-                    meshBuffers->radiusData[2 * globalIndex + 1] = lineSegments[globalIndex].vertices[1].radius;
+                    meshBuffers->radiusData[2 * globalIndex] = std::max(lineSegments[globalIndex].vertices[0].radius, 0.001f);
+                    meshBuffers->radiusData[2 * globalIndex + 1] = std::max(lineSegments[globalIndex].vertices[1].radius, 0.001f);
                     ++globalIndex;
                 }
 
@@ -382,7 +383,7 @@ void CurveTessellation::convertToLinearSweptSpheres(const std::vector<std::share
     }
 }
 
-void CurveTessellation::replacingSceneMesh(const TessellationType tessellationType, const std::vector<std::shared_ptr<MeshInstance>>& meshInstances)
+void CurveTessellation::replacingSceneMesh(nvrhi::IDevice* device, donut::engine::DescriptorTableManager* descriptorTable, const TessellationType tessellationType, const std::vector<std::shared_ptr<MeshInstance>>& meshInstances)
 {
     const auto& currentCurveMeshBuffers = m_curveMeshBuffersCache[(uint32_t)tessellationType];
     uint32_t curveIndex = 0;
@@ -424,8 +425,27 @@ void CurveTessellation::replacingSceneMesh(const TessellationType tessellationTy
             meshBuffers->vertexBuffer = nullptr;
             meshBuffers->instanceBuffer = nullptr;
 
+            if (!meshBuffers->morphTargetData.empty())
+            {
+                createDynamicVertexBuffer(device, descriptorTable, meshBuffers.get(), mesh->name);
+            }
+
             ++curveIndex;
         }
+    }
+}
+
+void CurveTessellation::swapDynamicVertexBuffer()
+{
+    for (auto& bufferGroupPrevVertexBufferPair : bufferGroupPrevVertexBufferMap)
+    {
+        auto meshBuffers = bufferGroupPrevVertexBufferPair.first;
+        const auto curVertexBuffer = meshBuffers->vertexBuffer;
+        const auto curVertexBufferDescriptor = meshBuffers->vertexBufferDescriptor;
+        meshBuffers->vertexBuffer = bufferGroupPrevVertexBufferPair.second.vertexBuffer;
+        meshBuffers->vertexBufferDescriptor = bufferGroupPrevVertexBufferPair.second.descriptor;
+        bufferGroupPrevVertexBufferPair.second.vertexBuffer = curVertexBuffer;
+        bufferGroupPrevVertexBufferPair.second.descriptor = curVertexBufferDescriptor;
     }
 }
 
@@ -446,6 +466,7 @@ void CurveTessellation::convertCurveLineStripsToLineSegments(const std::vector<s
             const auto& geometries = mesh->geometries;
 
             const auto& meshGeometryCache = m_curveOriginalGeometryInfoCache[meshIndex];
+            uint32_t virtualGeometryIndex = 0;
             for (uint32_t geometryIndex = 0; geometryIndex < mesh->geometries.size(); ++geometryIndex)
             {
                 const auto& geometryCache = meshGeometryCache[geometryIndex];
@@ -483,11 +504,33 @@ void CurveTessellation::convertCurveLineStripsToLineSegments(const std::vector<s
                         segment.vertices[1].texCoord[1] = uvEnd.y;
                     }
 
-                    segment.geometryIndex = geometryIndex;
+                    // Detect line-segment geometry indices dynamically at runtime
+                    if (geometry->type == MeshGeometryPrimitiveType::Lines)
+                    {
+                        if (!m_curvesLineSegments[meshIndex].empty())
+                        {
+                            const auto& prevSegmentEndVertex = m_curvesLineSegments[meshIndex].back().vertices[1];
+                            // If the current segment's start vertex differs from the previous segment's end vertex,
+                            // it indicates the start of a new geometry group
+                            if (!isnear(posStart.x, prevSegmentEndVertex.position[0]) ||
+                                !isnear(posStart.y, prevSegmentEndVertex.position[1]) ||
+                                !isnear(posStart.z, prevSegmentEndVertex.position[2]))
+                            {
+                                ++virtualGeometryIndex;
+                            }
+                        }
+
+                        segment.geometryIndex = virtualGeometryIndex;
+                    }
+                    else
+                    {
+                        segment.geometryIndex = geometryIndex;
+                    }
 
                     m_curvesLineSegments[meshIndex].push_back(segment);
                 }
             }
+            m_curvesLineSegmentsIndexMap[mesh->name] = meshIndex;
         }
     }
 }
@@ -514,4 +557,170 @@ void CurveTessellation::copyToMeshBuffersCache(
     }
 
     m_curveMeshBuffersCache[(uint32_t)tessellationType].push_back(meshBuffersCache);
+}
+
+void CurveTessellation::createDynamicVertexBuffer(
+    nvrhi::IDevice* device,
+    donut::engine::DescriptorTableManager* descriptorTable,
+    BufferGroup* meshBuffers,
+    std::string& meshName)
+{
+    auto AppendBufferRange = [](nvrhi::BufferRange& range, size_t size, uint64_t& currentBufferSize) {
+        range.byteOffset = currentBufferSize;
+        range.byteSize = nvrhi::align(size, size_t(16));
+        currentBufferSize += range.byteSize;
+    };
+
+    nvrhi::BufferDesc bufferDesc;
+    bufferDesc.isVertexBuffer = true;
+    bufferDesc.byteSize = 0;
+    bufferDesc.debugName = "Dynamic VertexBuffer - " + meshName + " 0";
+    bufferDesc.canHaveTypedViews = true;
+    bufferDesc.canHaveRawViews = true;
+    bufferDesc.isAccelStructBuildInput = true;
+    bufferDesc.canHaveUAVs = true;
+
+    if (!meshBuffers->positionData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::Position),
+            meshBuffers->positionData.size() * sizeof(meshBuffers->positionData[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->normalData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::Normal),
+            meshBuffers->normalData.size() * sizeof(meshBuffers->normalData[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->tangentData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::Tangent),
+            meshBuffers->tangentData.size() * sizeof(meshBuffers->tangentData[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->texcoord1Data.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::TexCoord1),
+            meshBuffers->texcoord1Data.size() * sizeof(meshBuffers->texcoord1Data[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->texcoord2Data.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::TexCoord2),
+            meshBuffers->texcoord2Data.size() * sizeof(meshBuffers->texcoord2Data[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->weightData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::JointWeights),
+            meshBuffers->weightData.size() * sizeof(meshBuffers->weightData[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->jointData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::JointIndices),
+            meshBuffers->jointData.size() * sizeof(meshBuffers->jointData[0]), bufferDesc.byteSize);
+    }
+
+    if (!meshBuffers->radiusData.empty())
+    {
+        AppendBufferRange(meshBuffers->getVertexBufferRange(VertexAttribute::CurveRadius),
+            meshBuffers->radiusData.size() * sizeof(meshBuffers->radiusData[0]), bufferDesc.byteSize);
+    }
+
+    meshBuffers->vertexBuffer = device->createBuffer(bufferDesc);
+
+    // Create prevVertexBuffer
+    bufferDesc.debugName = "Dynamic VertexBuffer - " + meshName + " 1";
+    nvrhi::BufferHandle prevVertexBuffer = device->createBuffer(bufferDesc);
+    std::shared_ptr<DescriptorHandle> prevVertexBufferDescriptor;
+
+    if (descriptorTable)
+    {
+        meshBuffers->vertexBufferDescriptor = std::make_shared<DescriptorHandle>(
+            descriptorTable->CreateDescriptorHandle(nvrhi::BindingSetItem::RawBuffer_SRV(0, meshBuffers->vertexBuffer)));
+
+        prevVertexBufferDescriptor = std::make_shared<DescriptorHandle>(
+            descriptorTable->CreateDescriptorHandle(nvrhi::BindingSetItem::RawBuffer_SRV(0, prevVertexBuffer)));
+    }
+    bufferGroupPrevVertexBufferMap[meshBuffers] = { prevVertexBuffer, prevVertexBufferDescriptor };
+
+    nvrhi::ResourceStates state = nvrhi::ResourceStates::VertexBuffer | nvrhi::ResourceStates::ShaderResource | nvrhi::ResourceStates::AccelStructBuildInput;
+
+    auto commandList = device->createCommandList();
+    commandList->open();
+
+    commandList->beginTrackingBufferState(meshBuffers->vertexBuffer, nvrhi::ResourceStates::Common);
+    commandList->beginTrackingBufferState(prevVertexBuffer, nvrhi::ResourceStates::Common);
+
+    if (!meshBuffers->positionData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::Position);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->positionData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->positionData.data(), range.byteSize, range.byteOffset);
+        std::vector<float3>().swap(meshBuffers->positionData);
+    }
+
+    if (!meshBuffers->normalData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::Normal);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->normalData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->normalData.data(), range.byteSize, range.byteOffset);
+        std::vector<uint32_t>().swap(meshBuffers->normalData);
+    }
+
+    if (!meshBuffers->tangentData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::Tangent);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->tangentData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->tangentData.data(), range.byteSize, range.byteOffset);
+        std::vector<uint32_t>().swap(meshBuffers->tangentData);
+    }
+
+    if (!meshBuffers->texcoord1Data.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::TexCoord1);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->texcoord1Data.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->texcoord1Data.data(), range.byteSize, range.byteOffset);
+        std::vector<float2>().swap(meshBuffers->texcoord1Data);
+    }
+
+    if (!meshBuffers->texcoord2Data.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::TexCoord2);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->texcoord2Data.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->texcoord2Data.data(), range.byteSize, range.byteOffset);
+        std::vector<float2>().swap(meshBuffers->texcoord2Data);
+    }
+
+    if (!meshBuffers->weightData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::JointWeights);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->weightData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->weightData.data(), range.byteSize, range.byteOffset);
+        std::vector<float4>().swap(meshBuffers->weightData);
+    }
+
+    if (!meshBuffers->jointData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::JointIndices);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->jointData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->jointData.data(), range.byteSize, range.byteOffset);
+        std::vector<vector<uint16_t, 4>>().swap(meshBuffers->jointData);
+    }
+
+    if (!meshBuffers->radiusData.empty())
+    {
+        const auto& range = meshBuffers->getVertexBufferRange(VertexAttribute::CurveRadius);
+        commandList->writeBuffer(meshBuffers->vertexBuffer, meshBuffers->radiusData.data(), range.byteSize, range.byteOffset);
+        commandList->writeBuffer(prevVertexBuffer, meshBuffers->radiusData.data(), range.byteSize, range.byteOffset);
+        std::vector<float>().swap(meshBuffers->radiusData);
+    }
+
+    commandList->setBufferState(meshBuffers->vertexBuffer, state);
+    commandList->setBufferState(prevVertexBuffer, state);
+    commandList->commitBarriers();
+
+    commandList->close();
+    device->executeCommandList(commandList);
 }

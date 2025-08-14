@@ -123,9 +123,13 @@ void AccelerationStructure::CreateAccelerationStructures(nvrhi::CommandListHandl
 
     for (const auto& mesh : m_scene->GetNativeScene()->GetSceneGraph()->GetMeshes())
     {
-        if (mesh->buffers->hasAttribute(donut::engine::VertexAttribute::JointWeights))
+        if ((m_updateAS && !mesh->isMorphTargetAnimationMesh) ||
+            mesh->buffers->hasAttribute(donut::engine::VertexAttribute::JointWeights))
         {
-            continue; // skip the skinning prototypes
+            // skip when:
+            // 1. The skinning prototypes
+            // 2. Static Mesh request update
+            continue;
         }
 
         nvrhi::rt::AccelStructDesc blasDesc;

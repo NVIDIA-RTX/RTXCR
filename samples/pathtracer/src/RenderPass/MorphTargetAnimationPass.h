@@ -28,7 +28,7 @@ public:
 
     ~MorphTargetAnimationPass() = default;
 
-    bool CreateMorphTargetAnimationPipeline();
+    bool CreateMorphTargetAnimationPipeline(const TessellationType tessellationType);
     void RecompileMorphTargetAnimationShaders();
 
     void Update(const float fElapsedTimeSeconds);
@@ -41,7 +41,8 @@ public:
         const float animationTimestampPerFrame,
         const bool enableDebugOverride,
         const uint32_t overrideKeyFrameIndex,
-        const float overrideKeyFrameWeight);
+        const float overrideKeyFrameWeight,
+        const float animationSmoothingFactor);
 
     void CleanComputePipeline() { m_pso = nullptr; }
 

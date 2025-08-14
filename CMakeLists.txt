@@ -61,11 +61,22 @@ endfunction()
 
 CheckAndDownloadPackage("DXC" "v1.7.2308" ${CMAKE_CURRENT_SOURCE_DIR}/external/dxc https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.7.2308/dxc_2023_08_14.zip)
 
-option(DONUT_WITH_DX11 "" OFF)
-option(DONUT_WITH_DX12 "" ON)
-option(DONUT_WITH_VULKAN "" ON)
-option(DONUT_WITH_LZ4 "" OFF)
-option(DONUT_WITH_MINIZ "" OFF)
+# -----------------------------------------------------------------------------
+# Streamline
+# -----------------------------------------------------------------------------
+set(DONUT_WITH_STREAMLINE OFF CACHE BOOL "" FORCE)
+set(DONUT_STREAMLINE_FETCH_URL "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.8.0/streamline-sdk-v2.8.0.zip" CACHE STRING "")
+set(DONUT_STREAMLINE_FETCH_SHA256 "313669f8cf886f823ea0518a50712efa5e2e8623689ed2a6bd0d9353e475bc47" CACHE STRING "")
+set(STREAMLINE_FEATURE_DLSS_SR ON CACHE BOOL "" FORCE)
+set(STREAMLINE_FEATURE_DLSS_RR ON CACHE BOOL "" FORCE)
+set(STREAMLINE_FEATURE_DLSS_FG ON CACHE BOOL "" FORCE)
+set(STREAMLINE_FEATURE_REFLEX ON CACHE BOOL "" FORCE)
+set(STREAMLINE_INSTALL_DIR "bin" CACHE STRING "" FORCE)
+
+if ((DONUT_STREAMLINE_FETCH_URL AND NOT DONUT_STREAMLINE_FETCH_SHA256) OR
+    (NOT DONUT_STREAMLINE_FETCH_URL AND DONUT_STREAMLINE_FETCH_SHA256))
+    message(SEND_ERROR "Both DONUT_STREAMLINE_FETCH_URL and DONUT_STREAMLINE_FETCH_SHA256 must be defined together")
+endif()
 
 # -----------------------------------------------------------------------------
 # Configure options
@@ -75,6 +86,20 @@ option(DONUT_WITH_MINIZ "" OFF)
 option(NVRHI_WITH_NVAPI "Include NVAPI support (requires NVAPI SDK)" ON)
 set(NVAPI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/nvapi/" CACHE STRING "Path to NVAPI include headers/shaders" )
 set(NVAPI_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/external/nvapi/amd64/nvapi64.lib" CACHE STRING "Path to NVAPI .lib file")
+
+# -----------------------------------------------------------------------------
+# DONUT options
+# -----------------------------------------------------------------------------
+option(DONUT_WITH_DX11 "" OFF)
+option(DONUT_WITH_DX12 "" ON)
+option(DONUT_WITH_VULKAN "" ON)
+option(DONUT_WITH_LZ4 "" OFF)
+option(DONUT_WITH_MINIZ "" OFF)
+set(DONUT_WITH_VULKAN ON CACHE BOOL "Enable the Vulkan version of Donut")
+set(NVRHI_WITH_NVAPI ON CACHE BOOL "" FORCE)
+set(DONUT_WITH_AFTERMATH OFF CACHE BOOL "" FORCE)
+set(NVRHI_INSTALL OFF CACHE BOOL "" FORCE)
+set(DONUT_DIR "${PROJECT_SOURCE_DIR}/external/donut")
 
 # Setup shader compiler
 set(DXC_DXIL_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/external/dxc/bin/x64/dxc.exe" CACHE STRING "DXC shader compiler path")

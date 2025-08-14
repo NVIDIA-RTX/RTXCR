@@ -51,10 +51,13 @@ void ResourceManager::CreateScreenResolutionTextures()
     m_pathTracerResources.postProcessingTexture = createRenderTargetTexture(m_screenWidth, m_screenHeight, "Post Processing Texture", nvrhi::Format::RGBA32_FLOAT);
     m_pathTracerResources.accumulationTexture = createRenderTargetTexture(m_screenWidth, m_screenHeight, "AccumulateTexture", nvrhi::Format::RGBA32_FLOAT);
 
+    // Output Texture
     {
         nvrhi::TextureDesc desc;
+        desc.dimension = nvrhi::TextureDimension::Texture2D;
         desc.width = m_screenWidth;
         desc.height = m_screenHeight;
+        desc.sampleCount = 1;
         desc.isUAV = true;
         desc.keepInitialState = true;
         desc.format = nvrhi::Format::RGBA32_FLOAT;
@@ -64,16 +67,42 @@ void ResourceManager::CreateScreenResolutionTextures()
         m_pathTracerResources.pathTracerOutputTextureDlssOutput = m_device->createTexture(desc);
     }
 
+    // Screenshot Texture
     {
         nvrhi::TextureDesc dumpTextureDesc;
+        dumpTextureDesc.dimension = nvrhi::TextureDimension::Texture2D;
         dumpTextureDesc.width = m_screenWidth;
         dumpTextureDesc.height = m_screenHeight;
+        dumpTextureDesc.sampleCount = 1;
         dumpTextureDesc.isUAV = false;
         dumpTextureDesc.keepInitialState = true;
         dumpTextureDesc.format = nvrhi::Format::RGBA32_FLOAT;
         dumpTextureDesc.initialState = nvrhi::ResourceStates::CopyDest;
         dumpTextureDesc.debugName = "Dump Texture";
         m_debuggingResources.dumpTexture = m_device->createStagingTexture(dumpTextureDesc, nvrhi::CpuAccessMode::Read);
+    }
+
+    // TAA Textures
+    {
+        nvrhi::TextureDesc taaTextureDesc;
+        taaTextureDesc.dimension = nvrhi::TextureDimension::Texture2D;
+        taaTextureDesc.width = m_screenWidth;
+        taaTextureDesc.height = m_screenHeight;
+        taaTextureDesc.sampleCount = 1;
+        taaTextureDesc.isUAV = true;
+        taaTextureDesc.keepInitialState = true;
+        taaTextureDesc.format = nvrhi::Format::RGBA16_SNORM;
+        taaTextureDesc.isRenderTarget = true;
+        taaTextureDesc.initialState = nvrhi::ResourceStates::RenderTarget;
+        taaTextureDesc.keepInitialState = true;
+        taaTextureDesc.useClearValue = true;
+        taaTextureDesc.clearValue = nvrhi::Color(0.0f);
+
+        taaTextureDesc.debugName = "TAA Feedback 1 Texture";
+        m_taaResources.taaFeedback1 = m_device->createTexture(taaTextureDesc);
+
+        taaTextureDesc.debugName = "TAA Feedback 2 Texture";
+        m_taaResources.taaFeedback2 = m_device->createTexture(taaTextureDesc);
     }
 }
 
@@ -91,23 +120,29 @@ void ResourceManager::CreateRenderResolutionTextures()
     m_pathTracerResources.gBufferResources.shadingNormalRoughnessTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Shading Normal Roughness", nvrhi::Format::RGBA16_FLOAT);
     m_pathTracerResources.gBufferResources.albedoTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Albedo", nvrhi::Format::RGBA8_UNORM);
     m_pathTracerResources.gBufferResources.specularAlbedoTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Specular Albedo", nvrhi::Format::RGBA16_FLOAT);
+
     m_pathTracerResources.gBufferResources.specularHitDistanceTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Specular HitT", nvrhi::Format::R16_FLOAT);
     m_pathTracerResources.gBufferResources.deviceZTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "DeviceZ", nvrhi::Format::R16_FLOAT);
+
+    m_denoiserResources.noisyDiffuseRadianceHitT = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Noisy Diffuse Radiance HitT", nvrhi::Format::RGBA16_FLOAT);
+    m_denoiserResources.noisySpecularRadianceHitT = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Noisy Specular Radiance HitT", nvrhi::Format::RGBA16_FLOAT);
+    m_denoiserResources.denoisedDiffuseRadianceHitT = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Denoised Diffuse Radiance HitT", nvrhi::Format::RGBA16_FLOAT);
+    m_denoiserResources.denoisedSpecularRadianceHitT = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Denoised Diffuse Radiance HitT", nvrhi::Format::RGBA16_FLOAT);
+    m_denoiserResources.validationTexture = createRenderTargetTexture(m_renderWidth, m_renderHeight, "Denoiser Validation Texture", nvrhi::Format::RGBA8_UNORM);
 }
 
 void ResourceManager::CreateMorphTargetBuffers(
     const std::shared_ptr<SampleScene> scene,
     nvrhi::CommandListHandle commandList)
 {
-    uint meshIndex = 0;
     for (const auto& mesh : scene->GetNativeScene()->GetSceneGraph()->GetMeshes())
     {
-        const auto& lineSegments = scene->GetCurveTessellation()->GetCurvesLineSegments(meshIndex);
+        const auto& lineSegments = scene->GetCurveTessellation()->GetCurvesLineSegments(mesh->name);
         if (mesh->isMorphTargetAnimationMesh && lineSegments.size() > 0)
         {
             MorphTargetResources morphTargetResource = {};
 
-            const std::string bufferIndexName = std::to_string(meshIndex);
+            const std::string bufferIndexName = std::to_string(mesh->globalMeshIndex);
 
             commandList->open();
             {
@@ -121,7 +156,6 @@ void ResourceManager::CreateMorphTargetBuffers(
             }
 
             const uint lineSegmentsSize = sizeof(LineSegment) * lineSegments.size();
-
             if (scene->GetCurveTessellationType() == TessellationType::Polytube)
             {
                 morphTargetResource.vertexSize = lineSegments.size() * RTXCR_CURVE_POLYTUBE_ORDER * 6;
@@ -166,7 +200,6 @@ void ResourceManager::CreateMorphTargetBuffers(
 
             commandList->close();
             m_device->executeCommandList(commandList);
-            m_device->waitForIdle();
 
             m_morphTargetResources.push_back(morphTargetResource);
 
@@ -176,7 +209,30 @@ void ResourceManager::CreateMorphTargetBuffers(
         {
             m_morphTargetResources.push_back(MorphTargetResources());
         }
-        ++meshIndex;
+    }
+
+    {
+        const auto& meshInstances = scene->GetNativeScene()->GetSceneGraph()->GetMeshInstances();
+        std::vector<uint32_t> morphTargetMaskData(meshInstances.size(), 0);
+        for (uint32_t meshInstanceIndex = 0; meshInstanceIndex < meshInstances.size(); ++meshInstanceIndex)
+        {
+            const auto& mesh = meshInstances.at(meshInstanceIndex)->GetMesh();
+            if (!mesh->buffers->morphTargetData.empty())
+            {
+                morphTargetMaskData[meshInstanceIndex] = 1;
+            }
+        }
+
+        m_pathTracerResources.instanceMorphTargetMetaDataBuffer =
+            createBuffer(morphTargetMaskData.size() * sizeof(uint32_t), sizeof(uint32_t), "Instance Morph Target Meta Data", false, false);
+
+        commandList->open();
+        commandList->beginTrackingBufferState(m_pathTracerResources.instanceMorphTargetMetaDataBuffer, nvrhi::ResourceStates::Common);
+        commandList->writeBuffer(m_pathTracerResources.instanceMorphTargetMetaDataBuffer, morphTargetMaskData.data(), morphTargetMaskData.size());
+        commandList->setPermanentBufferState(m_pathTracerResources.instanceMorphTargetMetaDataBuffer, nvrhi::ResourceStates::ShaderResource);
+        commandList->commitBarriers();
+        commandList->close();
+        m_device->executeCommandList(commandList);
     }
 }
 
@@ -275,6 +331,8 @@ void ResourceManager::ClearDenoiserResources(nvrhi::CommandListHandle commandLis
     commandList->clearTextureFloat(gBufferResources.viewZTexture, nvrhi::AllSubresources, nvrhi::Color(0.0f));
     commandList->clearTextureFloat(gBufferResources.motionVectorTexture, nvrhi::AllSubresources, nvrhi::Color(0.0f));
     commandList->clearTextureFloat(gBufferResources.shadingNormalRoughnessTexture, nvrhi::AllSubresources, nvrhi::Color(0.0f));
+    commandList->clearTextureFloat(m_denoiserResources.noisyDiffuseRadianceHitT, nvrhi::AllSubresources, nvrhi::Color(0.0f));
+    commandList->clearTextureFloat(m_denoiserResources.noisySpecularRadianceHitT, nvrhi::AllSubresources, nvrhi::Color(0.0f));
 }
 
 nvrhi::TextureHandle ResourceManager::createRenderTargetTexture(
@@ -288,6 +346,7 @@ nvrhi::TextureHandle ResourceManager::createRenderTargetTexture(
     desc.format = format;
     desc.initialState = nvrhi::ResourceStates::UnorderedAccess;
     desc.debugName = name;
+    desc.isRenderTarget = true;
 
     return m_device->createTexture(desc);
 }

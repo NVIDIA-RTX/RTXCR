@@ -36,7 +36,7 @@ void vulkanDeviceFeatureInfoCallback(VkDeviceCreateInfo& info)
     info.pNext = &deviceFeatures;
 }
 
-void ParseCommandLine(int argc, const char* const* argv, donut::app::DeviceCreationParameters& deviceParams, nvrhi::GraphicsAPI& api)
+void ParseCommandLine(int argc, const char* const* argv, donut::app::DeviceCreationParameters& deviceParams)
 {
     // Default resolution
     deviceParams.backBufferWidth = 1920;
@@ -81,24 +81,7 @@ int APIENTRY WinMain(_In_     HINSTANCE hInstance,
 int main(int __argc, const char** __argv)
 #endif
 {
-    nvrhi::GraphicsAPI api = donut::app::GetGraphicsAPIFromCommandLine(__argc, __argv);
-
-    donut::app::DeviceCreationParameters deviceParams = {};
-    deviceParams.enableRayTracingExtensions = true;
-#ifdef _DEBUG
-    // TODO: Enable runtime debugging for Vulkan, currently we find some issues when insert VK_LAYER_KHRONOS_validation
-    deviceParams.enableDebugRuntime = (api == nvrhi::GraphicsAPI::D3D12);
-    deviceParams.enableNvrhiValidationLayer = true;
-#endif
-
-    ParseCommandLine(__argc, __argv, deviceParams, api);
-
-    if (api == nvrhi::GraphicsAPI::VULKAN)
-    {
-        deviceParams.vulkanLibraryName = "sl.interposer.dll";
-        deviceParams.requiredVulkanDeviceExtensions.push_back(VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
-        deviceParams.deviceCreateInfoCallback = &vulkanDeviceFeatureInfoCallback;
-    }
+    const nvrhi::GraphicsAPI api = donut::app::GetGraphicsAPIFromCommandLine(__argc, __argv);
 
     // We don't support D3D11 in this sample
     if (api == nvrhi::GraphicsAPI::D3D11)
@@ -107,21 +90,53 @@ int main(int __argc, const char** __argv)
         return 1;
     }
 
+    donut::app::DeviceCreationParameters deviceParams = {};
+    deviceParams.enableRayTracingExtensions = true;
+    deviceParams.enablePerMonitorDPI = true;
+    deviceParams.allowModeSwitch = false;
+#ifdef _DEBUG
+    // TODO: Enable runtime debugging for Vulkan, currently we find some issues when insert VK_LAYER_KHRONOS_validation
+    deviceParams.enableDebugRuntime = (api == nvrhi::GraphicsAPI::D3D12);
+    deviceParams.enableNvrhiValidationLayer = (api == nvrhi::GraphicsAPI::D3D12);
+    deviceParams.enablePerMonitorDPI = true;
+    deviceParams.allowModeSwitch = false;
+#endif
+
+    ParseCommandLine(__argc, __argv, deviceParams);
+
+    // Initialize Streamline
+    const std::vector<sl::Feature> slFeaturesToLoad = {
+        sl::kFeatureDLSS,
+        sl::kFeatureDLSS_RR,
+        sl::kFeatureDLSS_G,
+        sl::kFeatureReflex,
+        sl::kFeaturePCL,
+    };
+
+
+    {
+        if (!SLWrapper::InitializeStreamline(api, slFeaturesToLoad))
+        {
+            donut::log::warning("Cannot initialize SL");
+            return 1;
+        }
+        SLWrapper m_SL(api);
+
+#if USE_VK
+        if (api == nvrhi::GraphicsAPI::VULKAN)
+        {
+#if USE_VK_STREAMLINE
+            deviceParams.vulkanLibraryName = "sl.interposer.dll";
+#endif
+            deviceParams.deviceCreateInfoCallback = &vulkanDeviceFeatureInfoCallback;
+        }
+    }
+#endif
+
     // Use override Dx12 DeviceManager to properly setup slSetD3DDevice
     // For Vulkan, just use the native Donut DeviceManager::Create
     donut::app::DeviceManager* deviceManager =
         (api == nvrhi::GraphicsAPI::D3D12) ? CreateD3D12() : donut::app::DeviceManager::Create(api);
-
-    std::vector<sl::Feature> slFeaturesToLoad = {
-            sl::kFeatureDLSS,
-            sl::kFeatureDLSS_RR,
-    };
-
-    if (!SLWrapper::InitializeStreamline(api, slFeaturesToLoad))
-    {
-        donut::log::warning("Cannot initialize SL");
-        return 1;
-    }
 
     if (!deviceManager->CreateWindowDeviceAndSwapChain(deviceParams, g_WindowTitle))
     {
@@ -135,18 +150,29 @@ int main(int __argc, const char** __argv)
         return 1;
     }
 
+#if USE_DX12
+    if (api == nvrhi::GraphicsAPI::D3D12)
+    {
+        if (!SLWrapper::IsSupportedDirectXDevice(slFeaturesToLoad, deviceManager->GetDevice()))
+        {
+            donut::log::error("SL Not support Dx12 Device");
+            return 1;
+        }
+    }
+#endif
+
 #if USE_VK
     if (api == nvrhi::GraphicsAPI::VULKAN &&
         !SLWrapper::IsSupportedVulkanDevice(slFeaturesToLoad, deviceManager->GetDevice()->getNativeObject(nvrhi::ObjectTypes::VK_PhysicalDevice)))
     {
-        donut::log::warning("SL Not support VK Device");
+        donut::log::error("SL Not support VK Device");
         return 1;
     }
 #endif
 
     {
         UIData uiData;
-        SampleRenderer renderer(deviceManager, uiData, api);
+        SampleRenderer renderer(deviceManager, uiData);
 
         if (renderer.Init(__argc, __argv))
         {

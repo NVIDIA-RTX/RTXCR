@@ -25,10 +25,19 @@
 #include "RenderPass/PathTracingPass.h"
 #include "RenderPass/PostProcessingPass.h"
 #include "RenderPass/MorphTargetAnimationPass.h"
+#include "Denoiser/NRD/NrdDenoiser.h"
 #include "Denoiser/DlssRR/sl_wrapper.h"
 #include "Ui/PathtracerUi.h"
 
 static const char* g_WindowTitle = "RTXCR Sample";
+
+namespace donut
+{
+    namespace render
+    {
+        class TemporalAntiAliasingPass;
+    }
+}
 
 class SampleRenderer : public donut::app::ApplicationBase
 {
@@ -42,7 +51,8 @@ public:
 		nvrhi::rt::ShaderTableHandle shaderTable;
 	};
 
-    SampleRenderer(donut::app::DeviceManager* deviceManager, UIData& ui, nvrhi::GraphicsAPI api);
+    SampleRenderer(donut::app::DeviceManager* deviceManager, UIData& ui);
+    virtual ~SampleRenderer();
 
 	virtual bool LoadScene(std::shared_ptr<donut::vfs::IFileSystem> fs,
                            const std::filesystem::path& sceneFileName) override;
@@ -59,6 +69,13 @@ public:
     */
     virtual bool KeyboardUpdate(int key, int scancode, int action, int mods) override
     {
+        if (key == GLFW_KEY_F13 && action == GLFW_PRESS)
+        {
+            // As GLFW abstracts away from Windows messages
+            // We instead set the F13 as the PC_Ping key in the constants and compare against that.
+            SLWrapper::ReflexTriggerPcPing();
+        }
+
         m_scene->GetCamera().KeyboardUpdate(key, scancode, action, mods);
 
         if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE)
@@ -77,6 +94,11 @@ public:
 
     virtual bool MouseButtonUpdate(int button, int action, int mods) override
     {
+        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+        {
+            SLWrapper::ReflexTriggerFlash();
+        }
+
         m_scene->GetCamera().MouseButtonUpdate(button, action, mods);
         return true;
     }
@@ -140,6 +162,15 @@ private:
     void updateView(const donut::math::uint viewportWidth, const donut::math::uint viewportHeight, const bool updatePreviousView);
     void updateConstantBuffers();
 
+    inline bool isDenoiserSelectionDirty() const { return m_previousDenoiserSelection != m_ui.denoiserSelection; }
+    inline bool isUpscalerSelectionDirty() const { return m_previousUpscalerSelection != m_ui.upscalerSelection; }
+
+    inline bool isDlssEnabled() const
+    {
+        return SLWrapper::IsDLSSSupported() &&
+                (m_ui.denoiserSelection == DenoiserSelection::DlssRr || m_ui.upscalerSelection == UpscalerSelection::DLSS);
+    }
+
     UIData& m_ui;
 
 	std::shared_ptr<donut::vfs::RootFileSystem> m_rootFileSystem;
@@ -162,9 +193,12 @@ private:
     std::unique_ptr<PathTracingPass> m_pathTracingPass;
     std::unique_ptr<PostProcessingPass> m_postProcessingPass;
     std::unique_ptr<MorphTargetAnimationPass> m_morphTargetAnimationPass;
+    std::unique_ptr<NrdDenoiser> m_nrdDenoiser;
+    std::unique_ptr<donut::render::TemporalAntiAliasingPass> m_taaPass;
 
-    std::unique_ptr<SLWrapper>  m_SL;
+    sl::DLSSOptions             m_dlssSrOptions;
     sl::DLSSDOptions            m_dlssRrOptions;
+    sl::DLSSGOptions            m_dlssgOptions;
 
     dm::uint2                   m_renderSize;
     donut::engine::PlanarView   m_view;
@@ -174,5 +208,14 @@ private:
 
 	dm::affine3 m_prevViewMatrix;
 
-	nvrhi::GraphicsAPI m_api;
+    // NRD
+    DenoiserSelection m_previousDenoiserSelection;
+
+    // Upscaler
+    UpscalerSelection m_previousUpscalerSelection;
+
+    // TAA
+    bool m_previousViewsValid;
+    donut::render::TemporalAntiAliasingJitter     m_temporalAntiAliasingJitter = donut::render::TemporalAntiAliasingJitter::Halton;
+    donut::render::TemporalAntiAliasingParameters m_temporalAntiAliasingParams;
 };

@@ -32,6 +32,7 @@ public:
     void Dispatch(
         nvrhi::CommandListHandle commandList,
         const ResourceManager::PathTracerResources& renderTargets,
+        const ResourceManager::DenoiserResources& denoiserResources,
         const nvrhi::SamplerHandle pathTracingSampler,
         std::shared_ptr<donut::engine::DescriptorTableManager> descriptorTable,
         const dm::uint2 renderSize,

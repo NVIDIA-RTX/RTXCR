@@ -32,15 +32,17 @@ void PostProcessingPass::RecompilePostProcessingShaders()
     m_tonemappingPso = nullptr;
 }
 
-void PostProcessingPass::Dispatch(nvrhi::CommandListHandle commandList,
-                                  const ResourceManager::PathTracerResources& renderTargets,
-                                  std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
-                                  nvrhi::IFramebuffer* framebuffer,
-                                  const donut::engine::PlanarView& view)
+void PostProcessingPass::Dispatch(
+    nvrhi::CommandListHandle commandList,
+    const ResourceManager::PathTracerResources& renderTargets,
+    const nvrhi::TextureHandle denoiserValidationTexture,
+    std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
+    nvrhi::IFramebuffer* framebuffer,
+    const donut::engine::PlanarView& view)
 {
     // TODO: Post Processing Passes
     
-    addTonemappingPass(commandList, renderTargets, commonPass, framebuffer, view);
+    addTonemappingPass(commandList, renderTargets, denoiserValidationTexture, commonPass, framebuffer, view);
 }
 
 bool PostProcessingPass::createTonemappingPipeline()
@@ -51,6 +53,7 @@ bool PostProcessingPass::createTonemappingPipeline()
         nvrhi::BindingLayoutItem::VolatileConstantBuffer(0),
         nvrhi::BindingLayoutItem::Texture_UAV(0),
         nvrhi::BindingLayoutItem::Texture_UAV(1),
+        nvrhi::BindingLayoutItem::Texture_SRV(0),
     };
 
     m_tonemappingBindingLayout = m_device->createBindingLayout(bindingLayoutDesc);
@@ -60,10 +63,12 @@ bool PostProcessingPass::createTonemappingPipeline()
     return true;
 }
 
-void PostProcessingPass::addTonemappingPass(nvrhi::CommandListHandle commandList,
-                                            const ResourceManager::PathTracerResources& renderTargets,
-                                            std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
-                                            nvrhi::IFramebuffer* framebuffer,
+void PostProcessingPass::addTonemappingPass(
+    nvrhi::CommandListHandle commandList,
+    const ResourceManager::PathTracerResources& renderTargets,
+    const nvrhi::TextureHandle denoiserValidationTexture,
+    std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
+    nvrhi::IFramebuffer* framebuffer,
                                             const donut::engine::PlanarView& view)
 {
     if (!m_tonemappingPso)
@@ -85,7 +90,8 @@ void PostProcessingPass::addTonemappingPass(nvrhi::CommandListHandle commandList
     bindingSetDesc.bindings = {
         nvrhi::BindingSetItem::ConstantBuffer(0, renderTargets.globalArgs),
         nvrhi::BindingSetItem::Texture_UAV(0, renderTargets.postProcessingTexture),
-        nvrhi::BindingSetItem::Texture_UAV(1, renderTargets.accumulationTexture)
+        nvrhi::BindingSetItem::Texture_UAV(1, renderTargets.accumulationTexture),
+        nvrhi::BindingSetItem::Texture_SRV(0, denoiserValidationTexture),
     };
 
     m_tonemappingBindingSet = m_device->createBindingSet(bindingSetDesc, m_tonemappingBindingLayout);

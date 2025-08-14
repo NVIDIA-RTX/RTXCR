@@ -20,10 +20,11 @@ RaytracingAccelerationStructure     SceneBVH                            : regist
 StructuredBuffer<InstanceData>      t_InstanceData                      : register(t1, space0);
 StructuredBuffer<GeometryData>      t_GeometryData                      : register(t2, space0);
 StructuredBuffer<MaterialConstants> t_MaterialConstants                 : register(t3, space0);
+StructuredBuffer<uint>              t_instanceMorphTargetMetaDataBuffer : register(t4, space0);
 
 SamplerState                        s_MaterialSampler                   : register(s0, space0);
 
-// DLSS-RR
+// DLSS/NRD
 RWTexture2D<float>                  u_OutputViewSpaceZ                  : register(u0, space1);
 RWTexture2D<float4>                 u_OutputNormalRoughness             : register(u1, space1);
 RWTexture2D<float4>                 u_OutputMotionVectors               : register(u2, space1);
@@ -31,6 +32,8 @@ RWTexture2D<float4>                 u_OutputEmissive                    : regist
 RWTexture2D<float4>                 u_OutputDiffuseAlbedo               : register(u4, space1);
 RWTexture2D<float4>                 u_OutputSpecularAlbedo              : register(u5, space1);
 RWTexture2D<float2>                 u_OutputScreenSpaceMotionVectors    : register(u6, space1);
+
+// DLSS-SR
 RWTexture2D<float>                  u_OutputDeviceZ                     : register(u7, space1);
 
 // Bindless Resources

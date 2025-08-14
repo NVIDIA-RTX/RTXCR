@@ -134,6 +134,18 @@ float3 gBufferDebugColor(const RtxcrDebugOutputType debugOutputMode,
             }
             break;
         }
+        case RtxcrDebugOutputType::IsMorphTarget:
+        {
+            if (t_instanceMorphTargetMetaDataBuffer.Load(payload.instanceID) == 0)
+            {
+                debugColor = float3(0.0f, 1.0f, 0.0f);
+            }
+            else
+            {
+                debugColor = float3(1.0f, 0.0f, 0.0f);
+            }
+            break;
+        }
         default:
             break;
     }

@@ -54,6 +54,7 @@ public:
     {
         nvrhi::BufferHandle  globalArgs;
         nvrhi::BufferHandle  lightConstantsBuffer;
+        nvrhi::BufferHandle  instanceMorphTargetMetaDataBuffer;
         nvrhi::TextureHandle pathTracerOutputTexture;
         nvrhi::TextureHandle pathTracerOutputTextureDlssOutput;
         nvrhi::TextureHandle postProcessingTexture;
@@ -80,6 +81,17 @@ public:
         bool isEnvMapUpdated = false;
     };
 
+    struct DenoiserResources
+    {
+        nvrhi::TextureHandle noisyDiffuseRadianceHitT;
+        nvrhi::TextureHandle noisySpecularRadianceHitT;
+
+        nvrhi::TextureHandle denoisedDiffuseRadianceHitT;
+        nvrhi::TextureHandle denoisedSpecularRadianceHitT;
+
+        nvrhi::TextureHandle validationTexture;
+    };
+
     struct DebuggingResources
     {
         nvrhi::StagingTextureHandle dumpTexture;
@@ -93,11 +105,20 @@ public:
         uint32_t vertexSize = 0;
     };
 
+    struct TaaResources
+    {
+        nvrhi::TextureHandle taaMotionVector;
+        nvrhi::TextureHandle taaFeedback1;
+        nvrhi::TextureHandle taaFeedback2;
+    };
+
     inline const PathTracerResources& GetPathTracerResources() const { return m_pathTracerResources; }
     inline const PathTracerResources::GBufferResources& GetGBufferResources() const { return m_pathTracerResources.gBufferResources; }
+    inline const DenoiserResources& GetDenoiserResources() const { return m_denoiserResources; }
     inline const std::vector<MorphTargetResources>& GetMorphTargetResources() const { return m_morphTargetResources; }
     inline const MorphTargetResources& GetMorphTargetResources(const uint32_t meshIndex) const { return m_morphTargetResources[meshIndex]; }
     inline const DebuggingResources& GetDebuggingResources() const { return m_debuggingResources; }
+    inline const TaaResources GetTaaResources() const { return m_taaResources; }
     inline uint32_t GetResolutionWidth() const { return m_screenWidth; }
     inline uint32_t GetResolutionHeight() const { return m_screenHeight; }
     inline uint32_t GetRenderWidth() const { return m_renderWidth; }
@@ -117,7 +138,9 @@ private:
     uint32_t m_renderHeight;
 
     PathTracerResources m_pathTracerResources;
+    DenoiserResources m_denoiserResources;
     DebuggingResources m_debuggingResources;
     std::vector<MorphTargetResources> m_morphTargetResources;
     uint32_t m_totalMorphTargetCount;
+    TaaResources m_taaResources;
 };

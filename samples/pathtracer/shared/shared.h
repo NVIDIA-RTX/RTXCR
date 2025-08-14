@@ -63,6 +63,7 @@ enum class RtxcrDebugOutputType : uint32_t
     PathTracerOutput    = 18,
     NaN                 = 19,
     WhiteFurnace        = 20,
+    IsMorphTarget       = 21,
 };
 
 enum class HairTechSelection : uint32_t
@@ -101,5 +102,6 @@ struct MorphTargetConstants
 {
     int vertexCount;
     float lerpWeight;
-    float2 pad0;
+    float prevLerpWeight;
+    float pad0;
 };

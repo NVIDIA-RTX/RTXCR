@@ -15,8 +15,12 @@
 #include <donut/app/DeviceManager.h>
 #include <donut/app/imgui_renderer.h>
 #include <donut/app/imgui_console.h>
+#include <donut/render/TemporalAntiAliasingPass.h>
 
 #include "../Curve/CurveTessellation.h"
+
+#include <NRD.h>
+#include "../Denoiser/NRD/NrdConfig.h"
 
 #include <../shared/shared.h>
 #include <sl.h>
@@ -24,12 +28,27 @@
 
 #include <sl_dlss.h>
 #include <sl_dlss_d.h>
+#include <sl_reflex.h>
 
 enum class DenoiserSelection : uint32_t
 {
     None = 0,
-    DlssRr = 1,
-    Reference = 2,
+    Nrd = 1,
+    DlssRr = 2,
+    Reference = 3,
+};
+
+enum class UpscalerSelection : uint32_t
+{
+    None = 0,
+    TAA = 1,
+    DLSS = 2,
+};
+
+enum class NrdMode : uint32_t
+{
+    Reblur = 0,
+    Relax = 1,
 };
 
 enum class HairAbsorptionModel : uint32_t
@@ -102,9 +121,16 @@ struct UIData
     // Denoiser
     bool                    enableDenoiser = false;
     DenoiserSelection       denoiserSelection = DenoiserSelection::DlssRr;
-    const char*             denoiserSelectionStrings = "None\0DLSS-RR\0Reference\0";
+    const char*             denoiserSelectionStrings = "None\0NRD\0DLSS-RR\0Reference\0";
+    // NRD
+    NrdMode                 nrdDenoiserMode = NrdMode::Relax;
+    const char*             nrdModeStrings = "Reblur\0Relax\0";
+    bool                    forceResetDenoiser = false;
+    nrd::CommonSettings     nrdCommonSettings = {};
+    nrd::ReblurSettings     reblurSettings = NrdConfig::GetDefaultREBLURSettings();
+    nrd::RelaxSettings      relaxSettings = NrdConfig::GetDefaultRELAXSettings();
     // DLSS-RR
-    sl::DLSSMode            dlssQualityMode = sl::DLSSMode::eMaxQuality;
+    sl::DLSSMode            dlssrrQualityMode = sl::DLSSMode::eMaxQuality;
     enum class DLSSMode : uint32_t
     {
         eOff,
@@ -116,6 +142,18 @@ struct UIData
         eDLAA,
         eCount,
     };
+    // DLFG
+    bool                    enableDlfg = true;
+    int                     dlfgNumFramesToGenerate = 2; // 2x DLSS-FG by default
+    int                     dlfgNumFramesActuallyPresented = 1;
+    int                     dlfgMaxNumFramesToGenerate = 3;
+    // Reflex
+    sl::ReflexMode          reflexMode = sl::ReflexMode::eLowLatency;
+    const char*             reflexSelectionStrings = "Off\0LowLatency\0LowLatencyWithBoost\0";
+    // Upscaler
+    UpscalerSelection       upscalerSelection = UpscalerSelection::DLSS;
+    const char*             upscalerSelectionStrings = "None\0TAA\0DLSS\0";
+    sl::DLSSMode            dlsssrQualityMode = sl::DLSSMode::eDLAA;
 
     // Hair
     bool                    enableHair = true;
@@ -195,6 +233,8 @@ struct UIData
     bool                    showAnimationUI = false;
     bool                    enableAnimations = false;
     float                   animationFps = 30.0f;
+    bool                    enableAnimationSmoothing = true;
+    float                   animationSmoothingFactor = 16.0f;
     bool                    enableAnimationDebugging = false;
     int                     animationKeyFrameIndexOverride = 0;
     float                   animationKeyFrameWeightOverride = 0.0f;
@@ -230,7 +270,8 @@ struct UIData
                                          "Motion Vector\0"
                                          "Path Tracer Output (Noised)\0"
                                          "NaN\0"
-                                         "WhiteFurnace\0";
+                                         "WhiteFurnace\0"
+                                         "IsMorphTarget\0";
     float debugScale = 1.0f;
     float debugMinMax[2] = { 0, TRACING_FAR_DENOISING_DISTANCE };
 };
@@ -254,6 +295,12 @@ private:
     int m_selectedLightIndex = 0;
 
     bool m_showRefreshSceneRemindText = false;
+
+    DenoiserSelection m_prevDenoiserSelection = DenoiserSelection::DlssRr;
+    bool m_prevNrdDlfgEnabled = true;
+    bool m_prevDlssrrDlfgEnabled = true;
+
+    uint64_t m_adapterMemoryInGigaBytes = 0;
 
     nvrhi::CommandListHandle m_commandList;
 };

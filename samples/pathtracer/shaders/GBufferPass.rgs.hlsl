@@ -21,6 +21,7 @@
 #include "material.hlsli"
 #include "sampling.hlsli"
 #include "hair.hlsli"
+#include "subsurfaceMaterial.hlsli"
 
 void writeGBuffer(const uint2 pixel,
                   const float3 hitPos,
@@ -29,13 +30,21 @@ void writeGBuffer(const uint2 pixel,
                   const float3 emissive,
                   const float3 diffuseAlbedo,
                   const float3 f0,
-                  const float NoV)
+                  const float NoV,
+                  const bool isMorphTarget,
+                  const bool isEyesCorneaMaterial,
+                  const float3 curveWorldSpacePosition,
+                  const float3 curveWorldSpacePositionPrev)
 {
     float viewZ = dot(hitPos - g_Lighting.view.matViewToWorld[3].xyz, g_Lighting.view.matViewToWorld[2].xyz);
     float nearZ = g_Lighting.view.matClipToView[3].z;
     u_OutputViewSpaceZ[pixel] = viewZ;
     u_OutputDeviceZ[pixel] = nearZ / viewZ;
-    u_OutputNormalRoughness[pixel] = float4(shadingNormal, roughness);
+
+    // We adjust roughness to 0 for cornea, which will improve the quality of eye denoising
+    const float roughnessAdjustMultiplier = (float)(g_Global.enableDlssRR == 1 || !g_Global.enableDenoiser || !isEyesCorneaMaterial);
+    u_OutputNormalRoughness[pixel] = float4(shadingNormal, roughness * roughnessAdjustMultiplier);
+
     // Motion vectors
     {
         float4 positionClip = mul(float4(hitPos, 1.0f), g_Lighting.view.matWorldToClip);
@@ -43,12 +52,25 @@ void writeGBuffer(const uint2 pixel,
         float4 positionClipPrev = mul(float4(hitPos, 1.0f), g_Lighting.viewPrev.matWorldToClip);
         positionClipPrev.xyz /= positionClipPrev.w;
 
-        float3 motionVector;
+        float3 motionVector = 0.0f;
         motionVector.xy = (positionClipPrev.xy - positionClip.xy) * g_Lighting.view.clipToWindowScale;
         motionVector.z = positionClipPrev.w - positionClip.w;
 
-        u_OutputMotionVectors[pixel] = float4(motionVector, 0.0f);
-        u_OutputScreenSpaceMotionVectors[pixel] = motionVector.xy;
+        // Object Motion Vector
+        float4 lssCentralClip = mul(float4(curveWorldSpacePosition, 1.0f), g_Lighting.view.matWorldToClip);
+        lssCentralClip.xyz /= lssCentralClip.w;
+        float4 lssCentralClipPrev = mul(float4(curveWorldSpacePositionPrev, 1.0f), g_Lighting.viewPrev.matWorldToClip);
+        lssCentralClipPrev.xyz /= lssCentralClipPrev.w;
+
+        float3 objectMotionVector = 0.0f;
+        if (g_Global.enableAnimation && isMorphTarget)
+        {
+            objectMotionVector.xy = (lssCentralClipPrev.xy - lssCentralClip.xy) * g_Lighting.view.clipToWindowScale;
+            objectMotionVector.z = lssCentralClipPrev.w - lssCentralClip.w;
+        }
+
+        u_OutputMotionVectors[pixel] = float4(motionVector + objectMotionVector, 0.0f);
+        u_OutputScreenSpaceMotionVectors[pixel] = motionVector.xy + objectMotionVector.xy;
     }
     u_OutputEmissive[pixel] = float4(emissive, 1.0f);
     u_OutputDiffuseAlbedo[pixel] = float4(diffuseAlbedo, 1);
@@ -144,6 +166,7 @@ void RayGen()
             break;
         }
 
+        const bool isMorphTarget = t_instanceMorphTargetMetaDataBuffer.Load(payload.instanceID) != 0;
         GeometrySample geometry = getGeometryFromHit(payload.instanceID,
                                                      payload.primitiveIndex,
                                                      payload.geometryIndex,
@@ -155,6 +178,7 @@ void RayGen()
                                                      payload.IsLss(),
                                                      payload.lssObjectPositionAndRadius0,
                                                      payload.lssObjectPositionAndRadius1,
+                                                     isMorphTarget,
                                                      t_InstanceData,
                                                      t_GeometryData,
                                                      t_MaterialConstants);
@@ -197,6 +221,8 @@ void RayGen()
         // Better precision than (ray.Origin + ray.Direction * payload.hitDistance)
         const float3 hitPos = mul(geometry.instance.transform, float4(geometry.objectSpacePosition, 1.0f)).xyz;
         float roughness = material.roughness;
+        float3 curveWorldSpacePosition = 0.0f;
+        float3 curveWorldSpacePositionPrev = 0.0f;
 
         // Use appropriate roughness for hair
         if (isHairMaterial(geometry.material.flags))
@@ -210,6 +236,10 @@ void RayGen()
                 roughness = !g_Global.enableHairMaterialOverride ? hairMaterialData.longitudinalRoughness : g_Global.hairRoughness;
                 break;
             }
+
+            // Calculate Hair Motion Vector
+            curveWorldSpacePosition = mul(geometry.instance.transform, float4(geometry.curveObjectSpacePosition, 1.0f)).xyz;
+            curveWorldSpacePositionPrev = mul(geometry.instance.prevTransform, float4(geometry.curveObjectSpacePositionPrev, 1.0f)).xyz;
         }
 
         float3 diffuseAlbedo = material.diffuseAlbedo;
@@ -221,7 +251,9 @@ void RayGen()
         const float NoV = dot(material.shadingNormal, -ray.Direction);
         writeGBuffer(pixelIndex, hitPos, material.shadingNormal, roughness,
                      g_Global.enableDirectLighting ? material.emissiveColor : 0.0f.rrr,
-                     diffuseAlbedo, material.specularF0, NoV);
+                     diffuseAlbedo, material.specularF0, NoV,
+                     isMorphTarget, isEyesCorneaMaterial(geometry.material),
+                     curveWorldSpacePosition, curveWorldSpacePositionPrev);
 
         if (!isLensPath || material.roughness > 0.0f ||
             !traceIndirect(material, geometry, viewVector, geometry.faceNormal, material.shadingNormal, hitPos, rngState, ray))

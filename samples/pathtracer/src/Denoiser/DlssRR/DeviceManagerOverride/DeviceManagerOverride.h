@@ -23,6 +23,4 @@
 #pragma once
 
 #include <donut/app/DeviceManager.h>
-
 donut::app::DeviceManager* CreateD3D12();
-// donut::app::DeviceManager* CreateVK();

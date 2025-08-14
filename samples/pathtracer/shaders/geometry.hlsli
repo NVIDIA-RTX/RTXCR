@@ -37,7 +37,53 @@ struct GeometrySample
     float3 geometryNormal;
     float4 tangent;
     float curveRadius;
+
+    // Motion Vector Positions
+    float3 curveObjectSpacePosition;
+    float3 curveObjectSpacePositionPrev;
 };
+
+float3 getGeometryFromHitPreviousFrameDOTS(
+    const GeometrySample gs,
+    const uint3 indices,
+    const float3 barycentrics,
+    const float3 normal0,
+    const float3 normal2,
+    ByteAddressBuffer prevVertexBuffer,
+    const float3 objectRayOrigin,
+    const float3 objectRayDirection)
+{
+    float3 vertexPosition0 = 0.0f;
+    float3 vertexPosition2 = 0.0f;
+
+    float3 vertexPositions[3];
+    vertexPositions[0] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.x * c_SizeOfPosition));
+    vertexPositions[1] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.y * c_SizeOfPosition));
+    vertexPositions[2] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.z * c_SizeOfPosition));
+
+    vertexPosition0 = vertexPositions[0];
+    vertexPosition2 = vertexPositions[2];
+
+    float curveRadius[3];
+    curveRadius[0] = asfloat(prevVertexBuffer.Load(gs.geometry.curveRadiusOffset + indices.x * c_SizeOfCurveRadius));
+    curveRadius[1] = asfloat(prevVertexBuffer.Load(gs.geometry.curveRadiusOffset + indices.y * c_SizeOfCurveRadius));
+    curveRadius[2] = asfloat(prevVertexBuffer.Load(gs.geometry.curveRadiusOffset + indices.z * c_SizeOfCurveRadius));
+
+    // The first vertex of each triangle is at the beginning of curve segment
+    const float3 objectCurveVertex0Pos = vertexPosition0 - curveRadius[0] * normal0;
+
+    // The last vertex of each triangle is at the end of curve segment
+    const float3 objectCurveVertex1Pos = vertexPosition2 - curveRadius[2] * normal2;
+
+    const float3 objectNormal = AdjustGeometryNormalDOTS(objectRayOrigin, objectRayDirection, objectCurveVertex0Pos, objectCurveVertex1Pos, curveRadius[0], curveRadius[2]);
+
+    const float3 objectTangent = normalize(objectCurveVertex1Pos - objectCurveVertex0Pos);
+    const float u = dot(objectTangent, gs.objectSpacePosition - objectCurveVertex0Pos);
+    const float3 objectCurvePositionPrev = objectCurveVertex0Pos + u * objectTangent;
+    const float3 curveObjectSpacePositionPrev = objectCurvePositionPrev + gs.curveRadius * objectNormal;
+
+    return curveObjectSpacePositionPrev;
+}
 
 // Assuming that scattering happens only on triangle-based meshes
 GeometrySample getGeometryFromHitFastSss(
@@ -49,7 +95,9 @@ GeometrySample getGeometryFromHitFastSss(
     GeometryAttributes attributes,
     float3 objectRayOrigin,
     float hitDistance,
-    float3 objectRayDirection)
+    float3 objectRayDirection,
+    const bool isMorphTarget,
+    ByteAddressBuffer prevVertexBuffer)
 {
     GeometrySample gs = (GeometrySample)0;
     gs.instance = initialSssGeometry.instance;
@@ -62,14 +110,24 @@ GeometrySample getGeometryFromHitFastSss(
 
     float3 vertexPosition0;
     float3 vertexPosition2;
+    const bool hasPosition = attributes & GeomAttr_Position;
     {
-        const bool hasPosition = attributes & GeomAttr_Position;
         float3 vertexPositions[3];
         vertexPositions[0] = hasPosition ? asfloat(vertexBuffer.Load3(gs.geometry.positionOffset + indices.x * c_SizeOfPosition)) : 0.0f;
         vertexPositions[1] = hasPosition ? asfloat(vertexBuffer.Load3(gs.geometry.positionOffset + indices.y * c_SizeOfPosition)) : 0.0f;
         vertexPositions[2] = hasPosition ? asfloat(vertexBuffer.Load3(gs.geometry.positionOffset + indices.z * c_SizeOfPosition)) : 0.0f;
 
         gs.objectSpacePosition = interpolate(vertexPositions, barycentrics);
+        if (hasPosition && isMorphTarget)
+        {
+            float3 vertexPositionsPrev[3];
+            vertexPositionsPrev[0] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.x * c_SizeOfPosition));
+            vertexPositionsPrev[1] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.y * c_SizeOfPosition));
+            vertexPositionsPrev[2] = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + indices.z * c_SizeOfPosition));
+
+            gs.curveObjectSpacePosition = gs.objectSpacePosition;
+            gs.curveObjectSpacePositionPrev = interpolate(vertexPositionsPrev, barycentrics);
+        }
 
         vertexPosition0 = vertexPositions[0];
         vertexPosition2 = vertexPositions[2];
@@ -144,6 +202,12 @@ GeometrySample getGeometryFromHitFastSss(
             float u = dot(objectTangent, gs.objectSpacePosition - objectCurveVertex0Pos);
             float3 objectCurvePosition = objectCurveVertex0Pos + u * objectTangent;
             gs.objectSpacePosition = objectCurvePosition + gs.curveRadius * objectNormal;
+
+            if (hasPosition && hasRadius && isMorphTarget)
+            {
+                gs.curveObjectSpacePosition = gs.objectSpacePosition;
+                gs.curveObjectSpacePositionPrev = getGeometryFromHitPreviousFrameDOTS(gs, indices, barycentrics, normal0, normal2, prevVertexBuffer, objectRayOrigin, objectRayDirection);
+            }
         }
     }
 
@@ -162,20 +226,26 @@ GeometrySample getGeometryFromHit(
     const bool isLss,
     const float4 lssObjectPositionAndRadius0,
     const float4 lssObjectPositionAndRadius1,
+    const bool isMorphTarget,
     StructuredBuffer<InstanceData> instanceBuffer,
     StructuredBuffer<GeometryData> geometryBuffer,
     StructuredBuffer<MaterialConstants> materialBuffer)
 {
-
     GeometrySample gs;
     gs.instance = instanceBuffer[instanceIndex];
     gs.geometry = geometryBuffer[gs.instance.firstGeometryIndex + geometryIndex];
     gs.material = materialBuffer[gs.geometry.materialIndex];
 
+    const uint vertexBufferIndex = gs.geometry.vertexBufferIndex + (uint)isMorphTarget * (g_Global.frameIndex % 2);
+
+    gs.curveObjectSpacePosition = 0.0f;
+    gs.curveObjectSpacePositionPrev = 0.0f;
+
     if (!isLss)
     {
         ByteAddressBuffer indexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.indexBufferIndex)];
-        ByteAddressBuffer vertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.vertexBufferIndex)];
+        ByteAddressBuffer vertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(vertexBufferIndex)];
+        ByteAddressBuffer prevVertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.vertexBufferIndex + ((g_Global.frameIndex + 1) % 2))];
 
         gs = getGeometryFromHitFastSss(
             gs,
@@ -186,7 +256,9 @@ GeometrySample getGeometryFromHit(
             attributes,
             objectRayOrigin,
             hitDistance,
-            objectRayDirection);
+            objectRayDirection,
+            isMorphTarget,
+            prevVertexBuffer);
     }
     else
     {
@@ -211,6 +283,18 @@ GeometrySample getGeometryFromHit(
         const float r0 = lssObjectPositionAndRadius0.w;
         const float r1 = lssObjectPositionAndRadius1.w;
         gs.curveRadius = lerp(r0, r1, u);
+
+        // Previous Frame Vertex Position
+        if (isMorphTarget)
+        {
+            ByteAddressBuffer prevVertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.vertexBufferIndex + ((g_Global.frameIndex + 1) % 2))];
+            const float3 p0Prev = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + (2 * primitiveIndex) * c_SizeOfPosition));
+            const float3 p1Prev = asfloat(prevVertexBuffer.Load3(gs.geometry.positionOffset + (2 * primitiveIndex + 1) * c_SizeOfPosition));
+            const float3 prevPos = lerp(p0Prev, p1Prev, u);
+
+            gs.curveObjectSpacePosition = p;
+            gs.curveObjectSpacePositionPrev = lerp(p0Prev, p1Prev, u);
+        }
     }
 
     return gs;

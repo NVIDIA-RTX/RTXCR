@@ -40,6 +40,24 @@
 
 using namespace donut;
 
+nvrhi::GraphicsAPI SLWrapper::m_GraphicsAPI = nvrhi::GraphicsAPI::D3D12;
+
+bool SLWrapper::m_dlssAvailable = false;
+bool SLWrapper::m_dlssrrAvailable = false;
+bool SLWrapper::m_dlssgAvailable = false;
+bool SLWrapper::m_reflexAvailable = false;
+bool SLWrapper::m_pclAvailable = false;
+
+sl::ViewportHandle SLWrapper::m_ViewportHandle = 0;
+sl::FrameToken* SLWrapper::m_FrameToken = nullptr;
+
+sl::DLSSGOptions SLWrapper::m_dlssgConsts{};
+sl::DLSSGState SLWrapper::m_dlssgSettings{};
+bool SLWrapper::m_dlssgTriggerswapchainRecreation = false;
+bool SLWrapper::m_dlssgShoudLoad = false;
+
+bool SLWrapper::m_reflexDriverFlashIndicatorEnable = false;
+
 static const char* GetSLErrorString(sl::Result res)
 {
     switch (res)
@@ -88,6 +106,48 @@ static const char* GetSLErrorString(sl::Result res)
     }
 }
 
+void logFunctionCallback(sl::LogType type, const char* msg)
+{
+    if (type == sl::LogType::eError)
+    {
+        // Add a breakpoint here to break on errors
+        donut::log::error(msg);
+    }
+    else if (type == sl::LogType::eWarn)
+    {
+        // Add a breakpoint here to break on warnings
+        donut::log::warning(msg);
+    }
+#if _DEBUG
+    else
+    {
+        donut::log::info(msg);
+    }
+#endif
+}
+
+bool successCheck(sl::Result result, const char* location)
+{
+    if (result == sl::Result::eOk)
+    {
+        return true;
+    }
+
+    auto a = GetSLErrorString(result);
+    if (a != "Unknown")
+    {
+        const sl::LogType logType = result == sl::Result::eWarnOutOfVRAM ? sl::LogType::eWarn : sl::LogType::eError;
+        logFunctionCallback(logType, ("Error: " + std::string(a) + (location == nullptr ? "" : (" encountered in " + std::string(location)))).c_str());
+    }
+    else
+    {
+        logFunctionCallback(sl::LogType::eError, ("Unknown error " + static_cast<int>(result) + (location == nullptr ? "" : (" encountered in " + std::string(location)))).c_str());
+    }
+
+    return false;
+
+}
+
 static std::wstring GetSlInterposerDllLocation()
 {
     wchar_t path[MAX_PATH];
@@ -102,7 +162,9 @@ static std::wstring GetSlInterposerDllLocation()
 static D3D12_RESOURCE_STATES NvRHIStateToD3D12(nvrhi::ResourceStates stateBits)
 {
     if (stateBits == nvrhi::ResourceStates::Common)
+    {
         return D3D12_RESOURCE_STATE_COMMON;
+    }
 
     D3D12_RESOURCE_STATES result = D3D12_RESOURCE_STATE_COMMON; // also 0
 
@@ -151,6 +213,15 @@ bool SLWrapper::InitializeStreamline(nvrhi::GraphicsAPI api, const std::vector<s
         case nvrhi::GraphicsAPI::VULKAN: slPreferences.renderAPI = sl::RenderAPI::eVulkan; break;
     }
     slPreferences.flags |= sl::PreferenceFlags::eUseManualHooking;
+    slPreferences.flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+
+#if _DEBUG
+    slPreferences.logMessageCallback = api == nvrhi::GraphicsAPI::D3D12 ? &logFunctionCallback : nullptr;
+    slPreferences.logLevel = sl::LogLevel::eDefault;
+    slPreferences.pathToLogsAndData = L"../../../bin/";
+#else
+    slPreferences.logLevel = sl::LogLevel::eOff;
+#endif
 
     std::wstring interposerLibPath = GetSlInterposerDllLocation();
     bool skipSignatureCheck = true;
@@ -167,6 +238,7 @@ bool SLWrapper::InitializeStreamline(nvrhi::GraphicsAPI api, const std::vector<s
     }
 
     sl::Result slRes = slInit(slPreferences, sl::kSDKVersion);
+
     if (slRes != sl::Result::eOk)
     {
         log::fatal("Failed to initialize Streamline: %s", GetSLErrorString(slRes));
@@ -194,8 +266,40 @@ void SLWrapper::ShutdownStreamline()
     s_SlInitialized = false;
 }
 
+void SLWrapper::setSlFeatureFlags(const sl::Feature feature)
+{
+    switch (feature)
+    {
+        case sl::kFeatureDLSS:
+        {
+            m_dlssAvailable = true;
+            break;
+        }
+        case sl::kFeatureDLSS_RR:
+        {
+            m_dlssrrAvailable = true;
+            break;
+        }
+        case sl::kFeatureDLSS_G:
+        {
+            m_dlssgAvailable = true;
+            break;
+        }
+        case sl::kFeatureReflex:
+        {
+            m_reflexAvailable = true;
+            break;
+        }
+        case sl::kFeaturePCL:
+        {
+            m_pclAvailable = true;
+            break;
+        }
+    }
+}
+
 #if USE_DX12
-bool SLWrapper::GetSupportedDXGIAdapter(const std::vector<sl::Feature>& featuresToLoad, IDXGIAdapter** outAdapter)
+bool SLWrapper::IsSupportedDirectXDevice(const std::vector<sl::Feature>& featuresToLoad, nvrhi::IDevice* device)
 {
     if (!s_SlInitialized)
     {
@@ -203,47 +307,23 @@ bool SLWrapper::GetSupportedDXGIAdapter(const std::vector<sl::Feature>& features
         return false;
     }
 
-    sl::Result slRes = sl::Result::eErrorNoSupportedAdapterFound;
+    const LUID luid = ((ID3D12Device*)device->getNativeObject(nvrhi::ObjectTypes::D3D12_Device))->GetAdapterLuid();
 
-    IDXGIFactory* factory;
-    if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&factory)))
+    sl::AdapterInfo adapterInfo{};
+    adapterInfo.deviceLUID = (uint8_t*)(&luid);
+    adapterInfo.deviceLUIDSizeInBytes = sizeof(LUID);
+
+    for (sl::Feature feature : featuresToLoad)
     {
-        IDXGIAdapter* adapter;
-        for (uint32_t i = 0; SUCCEEDED(factory->EnumAdapters(i, &adapter)); i++)
+        const sl::Result slRes = slIsFeatureSupported(feature, adapterInfo);
+        if (slRes == sl::Result::eOk)
         {
-            DXGI_ADAPTER_DESC desc{};
-            if (SUCCEEDED(adapter->GetDesc(&desc)))
-            {
-                sl::AdapterInfo adapterInfo{};
-                adapterInfo.deviceLUID = (uint8_t*)&desc.AdapterLuid;
-                adapterInfo.deviceLUIDSizeInBytes = sizeof(LUID);
-
-                for (sl::Feature feature : featuresToLoad)
-                {
-                    slRes = slIsFeatureSupported(feature, adapterInfo);
-                    if (slRes != sl::Result::eOk)
-                    {
-                        break;
-                    }
-                }
-
-                // All features supported
-                if (slRes == sl::Result::eOk)
-                {
-                    *outAdapter = adapter;
-                    break;
-                }
-            }
-            adapter->Release();
+            setSlFeatureFlags(feature);
         }
-
-        factory->Release();
-    }
-
-    if (slRes != sl::Result::eOk)
-    {
-        log::fatal("Could not find an adapter which supports all required features: %s", GetSLErrorString(slRes));
-        return false;
+        else
+        {
+            log::warning("Feature not supported on this device: %s", GetSLErrorString(slRes));
+        }
     }
 
     return true;
@@ -262,14 +342,16 @@ bool SLWrapper::IsSupportedVulkanDevice(const std::vector<sl::Feature>& features
     sl::AdapterInfo adapterInfo{};
     adapterInfo.vkPhysicalDevice = reinterpret_cast<void*>(vkPhysicalDevice);
 
-    sl::Result slRes = sl::Result::eOk;
     for (sl::Feature feature : featuresToLoad)
     {
-        slRes = slIsFeatureSupported(feature, adapterInfo);
-        if (slRes != sl::Result::eOk)
+        const sl::Result slRes = slIsFeatureSupported(feature, adapterInfo);
+        if (slRes == sl::Result::eOk)
         {
-            log::error("Feature not supported on this device: %s", GetSLErrorString(slRes));
-            return false;
+            setSlFeatureFlags(feature);
+        }
+        else
+        {
+            log::warning("Feature not supported on this device: %s", GetSLErrorString(slRes));
         }
     }
 
@@ -333,7 +415,7 @@ bool SLWrapper::AdvanceFrame()
 {
     if (!s_SlInitialized)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
@@ -350,9 +432,9 @@ bool SLWrapper::AdvanceFrame()
 
 bool SLWrapper::SetConstants(sl::Constants& consts)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssAvailable || !m_dlssrrAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
@@ -368,9 +450,9 @@ bool SLWrapper::SetConstants(sl::Constants& consts)
 
 bool SLWrapper::GetDLSSSettings(const sl::DLSSOptions& options, sl::DLSSOptimalSettings& outSettings)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
@@ -386,9 +468,9 @@ bool SLWrapper::GetDLSSSettings(const sl::DLSSOptions& options, sl::DLSSOptimalS
 
 bool SLWrapper::GetDLSSRRSettings(const sl::DLSSDOptions& options, sl::DLSSDOptimalSettings& outSettings)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssrrAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS-RR not available.");
         return false;
     }
 
@@ -396,6 +478,59 @@ bool SLWrapper::GetDLSSRRSettings(const sl::DLSSDOptions& options, sl::DLSSDOpti
     if (slRes != sl::Result::eOk)
     {
         log::error("Could not get optimal settings for DLSS-RR: %s", GetSLErrorString(slRes));
+        return false;
+    }
+
+    return true;
+}
+
+void SLWrapper::FeatureLoad(sl::Feature feature, const bool turn_on)
+{
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::D3D12) {
+        bool loaded;
+        slIsFeatureLoaded(feature, loaded);
+        if (loaded && !turn_on) {
+            slSetFeatureLoaded(feature, turn_on);
+        }
+        else if (!loaded && turn_on) {
+            slSetFeatureLoaded(feature, turn_on);
+        }
+    }
+}
+
+bool SLWrapper::TagDLSSGeneralBuffers(
+    nvrhi::CommandListHandle commandList,
+    dm::uint2 renderSize,
+    dm::uint2 displaySize,
+    nvrhi::TextureHandle motionVectors,
+    nvrhi::TextureHandle depth)
+{
+    if (!s_SlInitialized || !m_dlssAvailable)
+    {
+        log::warning("SL not initialized or DLSS not available.");
+        return false;
+    }
+
+    sl::Result slRes = sl::Result::eOk;
+
+    commandList->setTextureState(motionVectors, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+    commandList->setTextureState(depth, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+
+    sl::Resource slMvecResource = NvRHITextureToSL(motionVectors, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slDepthResource = NvRHITextureToSL(depth, nvrhi::ResourceStates::ShaderResource);
+
+    sl::Extent inputRes = { 0, 0, renderSize.x, renderSize.y };
+    sl::Extent outputRes = { 0, 0, displaySize.x, displaySize.y };
+
+    sl::ResourceTag slMvecTag(&slMvecResource, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &inputRes);
+    sl::ResourceTag slDepthTag(&slDepthResource, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow, &inputRes);
+
+    sl::ResourceTag dlssgResourceTags[] = { slMvecTag, slDepthTag };
+
+    slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssgResourceTags, _countof(dlssgResourceTags), NvRHICommandListToNative(commandList));
+    if (slRes != sl::Result::eOk)
+    {
+        log::error("Could not tag resources for DLSSG: %s", GetSLErrorString(slRes));
         return false;
     }
 
@@ -414,37 +549,31 @@ bool SLWrapper::TagDLSSBuffers(
     nvrhi::TextureHandle outputColor
 )
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
-    sl::Result slRes;
+    sl::Result slRes = sl::Result::eOk;
 
     // Streamline manages state transitions automatically, so this is not
     // necessary, but it is still useful to place resources in a known state
     commandList->setTextureState(inputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(motionVectors, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(depth, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
     commandList->setTextureState(outputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
 
     sl::Resource slColorResource = NvRHITextureToSL(inputColor, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slMvecResource = NvRHITextureToSL(motionVectors, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slDepthResource = NvRHITextureToSL(depth, nvrhi::ResourceStates::ShaderResource);
     sl::Resource slOutputResource = NvRHITextureToSL(outputColor, nvrhi::ResourceStates::RenderTarget);
 
     sl::Extent inputRes = {0, 0, renderSize.x, renderSize.y};
     sl::Extent outputRes = {0, 0, displaySize.x, displaySize.y};
     
     sl::ResourceTag slColorTag(&slColorResource, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &inputRes);
-    sl::ResourceTag slMvecTag(&slMvecResource, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &inputRes);
-    sl::ResourceTag slDepthTag(&slDepthResource, isLinearDepth ? sl::kBufferTypeLinearDepth : sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &inputRes);
     sl::ResourceTag slOutputTag(&slOutputResource, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &outputRes);
 
-    std::vector<sl::ResourceTag> dlssResourceTags = { slColorTag, slMvecTag, slDepthTag, slOutputTag };
+    std::vector<sl::ResourceTag> dlssResourceTags = { slColorTag, slOutputTag };
 
-    // Exposure is optional but recommended, autoexposure will be used if not provided
+    // Exposure is optional but recommended, auto-exposure will be used if not provided
     if (exposure)
     {
         commandList->setTextureState(exposure, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
@@ -455,7 +584,7 @@ bool SLWrapper::TagDLSSBuffers(
         dlssResourceTags.push_back(slExposureTag);
     }
 
-    slRes = slSetTag(m_ViewportHandle, dlssResourceTags.data(), static_cast<uint32_t>(dlssResourceTags.size()), NvRHICommandListToNative(commandList));
+    slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssResourceTags.data(), static_cast<uint32_t>(dlssResourceTags.size()), NvRHICommandListToNative(commandList));
     if (slRes != sl::Result::eOk)
     {
         log::error("Could not tag resources for DLSS: %s", GetSLErrorString(slRes));
@@ -479,9 +608,9 @@ bool SLWrapper::TagDLSSRRBuffers(
     nvrhi::TextureHandle outputColor
 )
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssrrAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS-RR not available.");
         return false;
     }
 
@@ -521,7 +650,7 @@ bool SLWrapper::TagDLSSRRBuffers(
         dlssrrResourceTags.push_back(slSpecHitDistTag);
     }
 
-    slRes = slSetTag(m_ViewportHandle, dlssrrResourceTags.data(), static_cast<uint32_t>(dlssrrResourceTags.size()), NvRHICommandListToNative(commandList));
+    slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssrrResourceTags.data(), static_cast<uint32_t>(dlssrrResourceTags.size()), NvRHICommandListToNative(commandList));
     if (slRes != sl::Result::eOk)
     {
         log::error("Could not tag resources for DLSS-RR: %s", GetSLErrorString(slRes));
@@ -533,9 +662,9 @@ bool SLWrapper::TagDLSSRRBuffers(
 
 bool SLWrapper::SetDLSSOptions(const sl::DLSSOptions& options)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
@@ -551,9 +680,9 @@ bool SLWrapper::SetDLSSOptions(const sl::DLSSOptions& options)
 
 bool SLWrapper::SetDLSSRROptions(const sl::DLSSDOptions& options)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssrrAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS-RR not available.");
         return false;
     }
 
@@ -569,38 +698,274 @@ bool SLWrapper::SetDLSSRROptions(const sl::DLSSDOptions& options)
 
 bool SLWrapper::EvaluateDLSS(nvrhi::CommandListHandle commandList)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS not available.");
         return false;
     }
 
-    std::vector<const sl::BaseStructure*> inputs = {&m_ViewportHandle};
+    std::vector<const sl::BaseStructure*> inputs = { &m_ViewportHandle };
     sl::Result slRes = slEvaluateFeature(sl::kFeatureDLSS, *m_FrameToken, inputs.data(), static_cast<uint32_t>(inputs.size()), NvRHICommandListToNative(commandList));
     if (slRes != sl::Result::eOk)
     {
-        log::error("Failed to evaluate DLSS: %s", GetSLErrorString(slRes));
+        log::warning("Failed to evaluate DLSS: %s", GetSLErrorString(slRes));
         return false;
     }
+
+    commandList->clearState();
 
     return true;
 }
 
 bool SLWrapper::EvaluateDLSSRR(nvrhi::CommandListHandle commandList)
 {
-    if (!s_SlInitialized)
+    if (!s_SlInitialized || !m_dlssrrAvailable)
     {
-        log::error("Streamline not initialized");
+        log::warning("SL not initialized or DLSS-RR not available.");
         return false;
     }
 
-    std::vector<const sl::BaseStructure*> inputs = {&m_ViewportHandle};
+    std::vector<const sl::BaseStructure*> inputs = { &m_ViewportHandle };
     sl::Result slRes = slEvaluateFeature(sl::kFeatureDLSS_RR, *m_FrameToken, inputs.data(), static_cast<uint32_t>(inputs.size()), NvRHICommandListToNative(commandList));
     if (slRes != sl::Result::eOk)
     {
-        log::error("Failed to evaluate DLSS: %s", GetSLErrorString(slRes));
+        log::warning("Failed to evaluate DLSS: %s", GetSLErrorString(slRes));
         return false;
     }
 
+    commandList->clearState();
+
     return true;
+}
+
+void SLWrapper::SetDLSSGOptions(const sl::DLSSGOptions& consts) {
+    if (!s_SlInitialized || !m_dlssgAvailable) {
+        log::warning("SL not initialized or DLSSG not available.");
+        return;
+    }
+
+    m_dlssgConsts = consts;
+
+    successCheck(slDLSSGSetOptions(m_ViewportHandle, m_dlssgConsts), "slDLSSGSetOptions");
+}
+
+void SLWrapper::QueryDLSSGState(uint64_t& estimatedVRamUsage, int& fps_multiplier, sl::DLSSGStatus& status, int& minSize, int& maxFrameCount, void*& pFence, uint64_t& fenceValue) {
+    if (!s_SlInitialized || !m_dlssgAvailable)
+    {
+        log::warning("SL not initialized or DLSSG not available.");
+        return;
+    }
+
+    sl::DLSSGState dlssgSettings{};
+    successCheck(slDLSSGGetState(m_ViewportHandle, m_dlssgSettings, &m_dlssgConsts), "slDLSSGGetState");
+
+    estimatedVRamUsage = m_dlssgSettings.estimatedVRAMUsageInBytes;
+    fps_multiplier = m_dlssgSettings.numFramesActuallyPresented;
+    status = m_dlssgSettings.status;
+    minSize = m_dlssgSettings.minWidthOrHeight;
+    maxFrameCount = m_dlssgSettings.numFramesToGenerateMax;
+    pFence = m_dlssgSettings.inputsProcessingCompletionFence;
+    fenceValue = m_dlssgSettings.lastPresentInputsProcessingCompletionFenceValue;
+}
+
+uint64_t SLWrapper::GetDLSSGLastFenceValue() { return m_dlssgSettings.lastPresentInputsProcessingCompletionFenceValue; }
+
+void SLWrapper::QueueGPUWaitOnSyncObjectSet(nvrhi::IDevice* pDevice, nvrhi::CommandQueue cmdQType, void* syncObj, uint64_t syncObjVal)
+{
+    if (pDevice == nullptr)
+    {
+        log::fatal("Invalid device!");
+    }
+
+    switch (pDevice->getGraphicsAPI())
+    {
+#if DONUT_WITH_DX12
+    case nvrhi::GraphicsAPI::D3D12:
+    {
+        auto pD3d12Device = static_cast<nvrhi::d3d12::IDevice*>(pDevice);
+        // device could be recreated during swapchain recreation
+        if (!pD3d12Device)
+        {
+            log::error("D3D12 Device is Invalid.");
+            return;
+        }
+        auto d3d12Queue = static_cast<ID3D12CommandQueue*>(pD3d12Device->getNativeQueue(nvrhi::ObjectTypes::D3D12_CommandQueue, cmdQType));
+        d3d12Queue->Wait(reinterpret_cast<ID3D12Fence*>(syncObj), syncObjVal);
+    }
+    break;
+#endif
+
+#if DONUT_WITH_VULKAN
+    case nvrhi::GraphicsAPI::VULKAN:
+    {
+#if _DEBUG
+        const auto validationLayer = static_cast<nvrhi::DeviceHandle>(pDevice);
+        const auto pVkDevice = static_cast<nvrhi::vulkan::IDevice*>(validationLayer.Get());
+#else
+        auto pVkDevice = dynamic_cast<nvrhi::vulkan::IDevice*>(pDevice);
+#endif
+        if (!pVkDevice)
+        {
+            log::error("Vulkan Device is Invalid.");
+            return;
+        }
+        pVkDevice->queueWaitForSemaphore(nvrhi::CommandQueue::Graphics, reinterpret_cast<VkSemaphore>(syncObj), syncObjVal);
+    }
+    break;
+#endif
+
+    default:
+        break;
+    }
+}
+
+void SLWrapper::CleanupDLSSG() {
+    if (!s_SlInitialized || !m_dlssgAvailable) {
+        log::warning("SL not initialized or DLSSG not available.");
+        return;
+    }
+
+    sl::Result status = slFreeResources(sl::kFeatureDLSS_G, m_ViewportHandle);
+    // if we've never ran the feature on this viewport, this call may return 'eErrorInvalidParameter'
+    assert(status == sl::Result::eOk || status == sl::Result::eErrorInvalidParameter || status == sl::Result::eErrorFeatureMissing);
+}
+
+bool SLWrapper::Get_DLSSG_SwapChainRecreation(bool& isTurnOn)
+{
+    isTurnOn = m_dlssgShoudLoad;
+    auto tmp = m_dlssgTriggerswapchainRecreation;
+    return tmp;
+}
+
+void SLWrapper::SetReflexConsts(const sl::ReflexOptions& reflexOptions)
+{
+    if (!s_SlInitialized || !m_reflexAvailable)
+    {
+        log::warning("SL not initialized or Reflex not available.");
+        return;
+    }
+
+    successCheck(slReflexSetOptions(reflexOptions), "Reflex_Options");
+
+    return;
+}
+
+void SLWrapper::ReflexCallback_Sleep(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_reflexAvailable)
+    {
+        successCheck(slGetNewFrameToken(m_FrameToken, &frameID), "SL_GetFrameToken");
+        successCheck(slReflexSleep(*m_FrameToken), "Reflex_Sleep");
+    }
+}
+
+void SLWrapper::ReflexCallback_SimStart(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_reflexAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::eSimulationStart, *temp), "PCL_SimStart");
+    }
+}
+
+void SLWrapper::ReflexCallback_SimEnd(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_pclAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *temp), "PCL_SimEnd");
+    }
+}
+
+void SLWrapper::ReflexCallback_RenderStart(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_pclAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *temp), "PCL_SubmitStart");
+    }
+}
+
+void SLWrapper::ReflexCallback_RenderEnd(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_pclAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *temp), "PCL_SubmitEnd");
+    }
+}
+
+void SLWrapper::ReflexCallback_PresentStart(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_pclAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::ePresentStart, *temp), "PCL_PresentStart");
+    }
+}
+
+void SLWrapper::ReflexCallback_PresentEnd(donut::app::DeviceManager& manager, uint32_t frameID)
+{
+    if (m_pclAvailable)
+    {
+        sl::FrameToken* temp;
+        successCheck(slGetNewFrameToken(temp, &frameID), "SL_GetFrameToken");
+        successCheck(slPCLSetMarker(sl::PCLMarker::ePresentEnd, *temp), "PCL_PresentEnd");
+    }
+}
+
+void SLWrapper::ReflexTriggerFlash()
+{
+    successCheck(slPCLSetMarker(sl::PCLMarker::eTriggerFlash, *m_FrameToken), "Reflex_Flash");
+}
+
+void SLWrapper::ReflexTriggerPcPing()
+{
+    if (m_pclAvailable)
+    {
+        successCheck(slPCLSetMarker(sl::PCLMarker::ePCLatencyPing, *m_FrameToken), "PCL_PCPing");
+    }
+}
+
+void SLWrapper::QueryReflexStats(bool& reflex_lowLatencyAvailable, bool& reflex_flashAvailable, std::string& stats)
+{
+    if (m_reflexAvailable)
+    {
+        sl::ReflexState state;
+        successCheck(slReflexGetState(state), "Reflex_State");
+
+        reflex_lowLatencyAvailable = state.lowLatencyAvailable;
+        reflex_flashAvailable = state.flashIndicatorDriverControlled;
+
+        auto rep = state.frameReport[63];
+        if (state.latencyReportAvailable && rep.gpuRenderEndTime != 0)
+        {
+            auto frameID = rep.frameID;
+            auto totalGameToRenderLatencyUs = rep.gpuRenderEndTime - rep.inputSampleTime;
+            auto simDeltaUs = rep.simEndTime - rep.simStartTime;
+            auto renderDeltaUs = rep.renderSubmitEndTime - rep.renderSubmitStartTime;
+            auto presentDeltaUs = rep.presentEndTime - rep.presentStartTime;
+            auto driverDeltaUs = rep.driverEndTime - rep.driverStartTime;
+            auto osRenderQueueDeltaUs = rep.osRenderQueueEndTime - rep.osRenderQueueStartTime;
+            auto gpuRenderDeltaUs = rep.gpuRenderEndTime - rep.gpuRenderStartTime;
+
+            stats = "frameID: " + std::to_string(frameID);
+            stats += "\ntotalGameToRenderLatencyUs: " + std::to_string(totalGameToRenderLatencyUs);
+            stats += "\nsimDeltaUs: " + std::to_string(simDeltaUs);
+            stats += "\nrenderDeltaUs: " + std::to_string(renderDeltaUs);
+            stats += "\npresentDeltaUs: " + std::to_string(presentDeltaUs);
+            stats += "\ndriverDeltaUs: " + std::to_string(driverDeltaUs);
+            stats += "\nosRenderQueueDeltaUs: " + std::to_string(osRenderQueueDeltaUs);
+            stats += "\ngpuRenderDeltaUs: " + std::to_string(gpuRenderDeltaUs);
+        }
+        else
+        {
+            stats = "Latency Report Unavailable";
+        }
+    }
 }

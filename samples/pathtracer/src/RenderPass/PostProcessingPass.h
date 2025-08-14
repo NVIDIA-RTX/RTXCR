@@ -28,19 +28,23 @@ public:
     bool CreatePostProcessingPipelines();
     void RecompilePostProcessingShaders();
 
-    void Dispatch(nvrhi::CommandListHandle commandList,
-                  const ResourceManager::PathTracerResources& renderTargets,
-                  std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
-                  nvrhi::IFramebuffer* framebuffer,
-                  const donut::engine::PlanarView& view);
+    void Dispatch(
+        nvrhi::CommandListHandle commandList,
+        const ResourceManager::PathTracerResources& renderTargets,
+        const nvrhi::TextureHandle denoiserValidationTexture,
+        std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
+        nvrhi::IFramebuffer* framebuffer,
+        const donut::engine::PlanarView& view);
 
 private:
     bool createTonemappingPipeline();
-    void addTonemappingPass(nvrhi::CommandListHandle commandList,
-                            const ResourceManager::PathTracerResources& renderTargets,
-                            std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
-                            nvrhi::IFramebuffer* framebuffer,
-                            const donut::engine::PlanarView& view);
+    void addTonemappingPass(
+        nvrhi::CommandListHandle commandList,
+        const ResourceManager::PathTracerResources& renderTargets,
+        const nvrhi::TextureHandle denoiserValidationTexture,
+        std::shared_ptr<donut::engine::CommonRenderPasses> commonPass,
+        nvrhi::IFramebuffer* framebuffer,
+        const donut::engine::PlanarView& view);
 
     nvrhi::IDevice* const m_device;
     std::shared_ptr<donut::engine::ShaderFactory> m_shaderFactory;

@@ -36,8 +36,44 @@ function(util_generate_shader_config_file OUT_FILE_NAME DIR DEFINES)
     file(WRITE ${OUT_FILE_NAME} ${out_content})
 endfunction()
 
-option(STREAMLINE_FEATURE_DLSS_SR "Include DLSS-SR dll" ON)
-option(STREAMLINE_FEATURE_DLSS_RR "Include DLSS-RR dll" ON)
-# Force NRD plugin to be disabled since it's incompatible with the native NRD integration.
-set(STREAMLINE_FEATURE_NRD OFF)
-add_subdirectory("streamline")
+# see https://github.com/NVIDIAGameWorks/RayTracingDenoiser#cmake-options
+# set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH})
+set(NRD_DXC_PATH "${DXC_DXIL_EXECUTABLE}" CACHE STRING "DXC shader compiler path for NRD")
+set(NRD_SHADER_OUTPUT_PATH "${SHADER_OUTPUT_PATH}" CACHE STRING "")
+set(NRD_PROJECT_FOLDER "External/RayTracingDenoiser")
+set(NRD_NORMAL_ENCODING "2" CACHE STRING "Normal encoding variant (0-4, matches nrd::NormalEncoding)")
+set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "Roughness encoding variant (0-2, matches nrd::RoughnessEncoding)")
+set(NRD_IS_SUBMODULE ON)
+# NRD uses a custom output path for some reason
+set(GLOBAL_BIN_OUTPUT_PATH ${CMAKE_BINARY_DIR} CACHE STRING "")
+set(NRD_SHADERS_PATH "${CMAKE_BINARY_DIR}/NRDShaders" CACHE STRING "")
+option(NRD_DISABLE_SHADER_COMPILATION "" ON)
+option(NRD_USE_PRECOMPILED_SHADERS "" OFF)
+
+add_subdirectory("RayTracingDenoiser")
+
+# Let CMake generate the nrd_shaders.cfg file
+util_generate_shader_config_file(
+    "nrd.cfg"
+    "RayTracingDenoiser/Shaders/Source"
+    "-D NRD_COMPILER_DXC=1 -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}"
+)
+
+# ShaderMake general arguments
+set (
+    SHADERMAKE_GENERAL_ARGS
+    "-I ${CMAKE_CURRENT_SOURCE_DIR}/../build/_deps/mathlib-src -I ${CMAKE_CURRENT_SOURCE_DIR}/RayTracingDenoiser/Shaders/Include -I ${CMAKE_CURRENT_SOURCE_DIR}/RayTracingDenoiser/Shaders/Resources"
+)
+
+# Compile all shaders in nrd_shaders.cfg
+donut_compile_shaders(
+    TARGET nrd_shaders
+    CONFIG ${CMAKE_CURRENT_SOURCE_DIR}/nrd.cfg
+    SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/RayTracingDenoiser/Shaders/Include
+    FOLDER "NRD"
+    DXIL ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/nrd/dxil
+    SPIRV_DXC ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/nrd/spirv
+    CFLAGS "-WX -O3 -enable-16bit-types -all_resources_bound"
+    SHADERMAKE_OPTIONS_DXIL ${SHADERMAKE_GENERAL_ARGS}
+    SHADERMAKE_OPTIONS_SPIRV ${SHADERMAKE_GENERAL_ARGS}
+)

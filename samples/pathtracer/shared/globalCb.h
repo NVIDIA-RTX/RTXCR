@@ -23,7 +23,7 @@ struct GlobalConstants
 
     float2 jitterOffset;
     RtxcrDebugOutputType debugOutputMode;
-    uint pad0;
+    bool enableDenoiserValidationLayer;
 
     uint enableAccumulation;
     float recipAccumulatedFrames;
@@ -49,6 +49,8 @@ struct GlobalConstants
     float exposureScale;
     uint toneMappingOperator;
     uint clamp;
+
+    float4 nrdHitDistanceParams;
 
     // Chiang Hair Override
     HairTechSelection hairMode;
@@ -114,4 +116,8 @@ struct GlobalConstants
     float debugScale;
     float debugMin;
     float debugMax;
+
+    // Animation
+    bool enableAnimation;
+    float3 pad0;
 };

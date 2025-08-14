@@ -14,6 +14,8 @@
 #include <donut/engine/Scene.h>
 #include <donut/engine/TextureCache.h>
 
+#include <imgui_internal.h>
+
 #include "../SampleRenderer.h"
 
 using namespace donut::app;
@@ -38,6 +40,51 @@ namespace
         color.y = srgb_to_linear(color.y);
         color.z = srgb_to_linear(color.z);
     }
+
+    inline ImVec2 MakeImVec2(const dm::float2& v)
+    {
+        return ImVec2{ v.x, v.y };
+    }
+
+    inline ImVec2 MakeImVec2(const dm::int2& v)
+    {
+        return ImVec2{ float(v.x), float(v.y) };
+    }
+
+    inline dm::float2 MakeFloat2(const ImVec2& v)
+    {
+        return dm::float2{ v.x, v.y };
+    }
+
+
+    void SetConstrainedWindowPos(const char* windowName, ImVec2 windowPos, const ImVec2& windowPivot, const ImVec2& screenSize)
+    {
+        ImGuiCond cond = ImGuiCond_FirstUseEver;
+        ImGuiWindow* window = ImGui::FindWindowByName(windowName);
+
+        // Bound the window position to be on screen by a margin
+        const float kMinOnscreenLength = 20.0f;
+        if (window)
+        {
+            const dm::float2 kMinOnscreenSize = { kMinOnscreenLength, kMinOnscreenLength };
+            dm::float2 currentWindowPos = MakeFloat2(window->Pos);
+            dm::float2 currentWindowSize = MakeFloat2(window->Size);
+            dm::box2 windowRect{ currentWindowPos, currentWindowPos + currentWindowSize };
+            dm::box2 screenLayoutRect{ kMinOnscreenSize, MakeFloat2(screenSize) - kMinOnscreenSize };
+
+            if (!screenLayoutRect.intersects(windowRect))
+            {
+                cond = ImGuiCond_Always;
+                dm::float2 minCornerAdjustment = -min(windowRect.m_maxs - screenLayoutRect.m_mins, dm::float2::zero());
+                dm::float2 maxCornerAdjustment = -max(windowRect.m_mins - screenLayoutRect.m_maxs, dm::float2::zero());
+                dm::float2 adjustment = minCornerAdjustment + maxCornerAdjustment;
+                windowRect = windowRect.translate(adjustment);
+
+                windowPos = MakeImVec2(windowRect.m_mins + MakeFloat2(windowPivot) * currentWindowSize);
+            }
+        }
+        ImGui::SetNextWindowPos(windowPos, cond, windowPivot);
+    }
 }
 
 PathtracerUI::PathtracerUI(DeviceManager* deviceManager, SampleRenderer& app, UIData& ui)
@@ -47,8 +94,41 @@ PathtracerUI::PathtracerUI(DeviceManager* deviceManager, SampleRenderer& app, UI
 {
     m_commandList = GetDevice()->createCommandList();
 
-    m_fontOpenSans = CreateFontFromFile(*(app.GetRootFS()), "/assets/fonts/OpenSans/OpenSans-Regular.ttf", 17.f);
-    m_fontDroidMono = CreateFontFromFile(*(app.GetRootFS()), "/assets/fonts/DroidSans/DroidSans-Mono.ttf", 14.f);
+    // Check adapter memory
+    {
+        std::vector<donut::app::AdapterInfo> adapters;
+        GetDeviceManager()->EnumerateAdapters(adapters);
+        for (const auto& adapter : adapters)
+        {
+            m_adapterMemoryInGigaBytes = std::max(m_adapterMemoryInGigaBytes, adapter.dedicatedVideoMemory);
+        }
+        constexpr uint64_t gigabyte = 1073741824;
+        m_adapterMemoryInGigaBytes /= gigabyte;
+    }
+
+    float scaleX, scaleY;
+    GetDeviceManager()->GetDPIScaleInfo(scaleX, scaleY);
+
+    float fontSize = 25.0f;
+    if (scaleX <= 1.0f)
+    {
+        fontSize = 25.0f;
+    }
+    else if (scaleX > 1.0f && scaleX <= 1.51f)
+    {
+        fontSize = 16.0f;
+    }
+    else if (scaleX <= 2.51f)
+    {
+        fontSize = 11.0f;
+    }
+    else
+    {
+        fontSize = 9.0f;
+    }
+
+    m_fontOpenSans = CreateFontFromFile(*(app.GetRootFS()), "/assets/fonts/OpenSans/OpenSans-Regular.ttf", fontSize);
+    m_fontDroidMono = CreateFontFromFile(*(app.GetRootFS()), "/assets/fonts/DroidSans/DroidSans-Mono.ttf", 14.0f);
 
     ImGui_Console::Options opts;
     opts.font = m_fontDroidMono;
@@ -67,6 +147,29 @@ void PathtracerUI::buildUI(void)
 
     int width, height;
     GetDeviceManager()->GetWindowDimensions(width, height);
+    float scaleX, scaleY;
+    GetDeviceManager()->GetDPIScaleInfo(scaleX, scaleY);
+
+    const float layoutToDisplay = std::min(scaleX, scaleY);
+    const float contentScale = layoutToDisplay > 0.f ? (1.0f / layoutToDisplay) : 1.0f;
+
+    // Layout is done at lower resolution than scaled up virtually past the render target m_size
+    // any element beyond this range is clipped.
+    float widthScale = 0.4f;
+    if (scaleX > 2.5f || (width < 1920.0f && width >= 1080.0f))
+    {
+        widthScale = 0.6f;
+    }
+    else if (width > 1920.0f && width <= 2560.0f)
+    {
+        widthScale = 0.5f;
+    }
+    else if (width > 2560.0f || width < 1080.0f)
+    {
+        widthScale = 1.0f;
+    }
+    width = int(width * contentScale) * widthScale;
+    height = int(height * contentScale);
 
     if (m_app.IsSceneLoading())
     {
@@ -96,11 +199,15 @@ void PathtracerUI::buildUI(void)
         m_showRefreshSceneRemindText = false;
     };
 
-    float const fontSize = ImGui::GetFontSize();
-    ImGui::SetNextWindowPos(ImVec2(fontSize * 0.2f, fontSize * 0.2f), 0);
+    const char* kWindowName = "Settings";
+    const dm::int2 screenLayoutSize(width, height);
+    SetConstrainedWindowPos(kWindowName, ImVec2(10, 10), ImVec2(0.0f, 0.0f), MakeImVec2(screenLayoutSize));
+    ImGui::SetNextWindowSize(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(100.f, 200.f), MakeImVec2(screenLayoutSize));
 
-    ImGui::Begin("Settings", 0, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Begin(kWindowName, 0, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove);
     ImGui::SetWindowPos(ImVec2(1.0f, 1.0f));
+
     ImGui::StyleColorsDark();
     ImGuiStyle* style = &ImGui::GetStyle();
     ImVec4* colors = style->Colors;
@@ -161,7 +268,7 @@ void PathtracerUI::buildUI(void)
     }
 
     ImGui::Text("%s, %s", GetDeviceManager()->GetRendererString(), m_app.GetResolutionInfo().c_str());
-    double frameTime = GetDeviceManager()->GetAverageFrameTimeSeconds();
+    const double frameTime = GetDeviceManager()->GetAverageFrameTimeSeconds() / (double)std::max(m_ui.dlfgNumFramesActuallyPresented, 1);
     if (frameTime > 0.0)
     {
         ImGui::Text("%.3f ms/frame (%.1f FPS)", frameTime * 1e3, 1.0 / frameTime);
@@ -218,8 +325,13 @@ void PathtracerUI::buildUI(void)
             updateAccum |= ImGui::Checkbox("Enable Soft Shadows", &m_ui.enableSoftShadows);
 
 #ifdef _DEBUG
-            updateAccum |= ImGui::Checkbox("Transmission", &m_ui.enableTransmission); ImGui::SameLine();
-            updateAccum |= ImGui::Combo("Jitter Mode", (int*)&m_ui.jitterMode, m_ui.jitterModeStrings);
+            if (ImGui::BeginTable("Transmission_Jitter_Mode_Table", 2)) {
+                ImGui::TableNextColumn();
+                updateAccum |= ImGui::Checkbox("Transmission", &m_ui.enableTransmission);
+                ImGui::TableNextColumn();
+                updateAccum |= ImGui::Combo("Jitter Mode", (int*)&m_ui.jitterMode, m_ui.jitterModeStrings);
+                ImGui::EndTable();
+            }
 #endif
 
             if (ImGui::Button("Recompile Shader"))
@@ -231,9 +343,73 @@ void PathtracerUI::buildUI(void)
             ImGui::SameLine();
             ImGui::InputText(" ", m_ui.screenshotName, m_ui.kBufSize, ImGuiInputTextFlags_EnterReturnsTrue);
             ImGui::SameLine();
-            if (ImGui::Button("Capture Screenshot"))
+            if (ImGui::Button("Capture"))
             {
                 m_ui.captureScreenshot = true;
+            }
+
+            if (m_ui.denoiserSelection != DenoiserSelection::Reference)
+            {
+                ImGui::Separator();
+                if (ImGui::CollapsingHeader("DLSS:", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    ImGui::Indent(12.0f);
+                    if (SLWrapper::IsDLSSGSupported())
+                    {
+                        if (ImGui::CollapsingHeader("DLFG:", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            ImGui::Indent(12.0f);
+                            updateAccum |= ImGui::Checkbox("Enable DLSS Frame Generation (DLFG)", &m_ui.enableDlfg);
+                            if (m_ui.enableDlfg)
+                            {
+                                ImGui::Text("Generated Frames");
+                                if (m_ui.dlfgMaxNumFramesToGenerate > 1)
+                                {
+                                    ImGui::SameLine();
+                                    ImGui::SliderInt("##MultiframeCount", &m_ui.dlfgNumFramesToGenerate, 2, m_ui.dlfgMaxNumFramesToGenerate + 1, "%dx", ImGuiSliderFlags_AlwaysClamp);
+                                }
+                            }
+                            ImGui::Indent(-12.0f);
+                        }
+                    }
+                    else
+                    {
+                        m_ui.enableDlfg = false;
+                        if (SLWrapper::IsDLSSSupported())
+                        {
+                            ImGui::Text("DLSS Frame Generation (DLFG) is not supported on current GPU.");
+                        }
+                    }
+
+                    if (SLWrapper::IsReflexSupported())
+                    {
+                        if (ImGui::CollapsingHeader("Reflex:", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            ImGui::Indent(12.0f);
+                            if (m_ui.enableDlfg)
+                            {
+                                sl::ReflexMode reflexModeDlfg = sl::ReflexMode::eOff;
+                                // Reflex is required when DLFG is enabled
+                                ImGui::Combo("Reflex Mode", (int*)&reflexModeDlfg, "Low Latency\0LowLatency + Boost\0");
+
+                                m_ui.reflexMode = (sl::ReflexMode)((int)reflexModeDlfg + 1);
+                            }
+                            else
+                            {
+                                ImGui::Combo("Reflex Mode", (int*)&m_ui.reflexMode, m_ui.reflexSelectionStrings);
+                            }
+                            ImGui::Indent(-12.0f);
+                        }
+                    }
+                    else
+                    {
+                        if (SLWrapper::IsDLSSSupported())
+                        {
+                            ImGui::Text("Reflex is not supported on current GPU.");
+                        }
+                    }
+                    ImGui::Indent(-12.0f);
+                }
             }
         }
         ImGui::Indent(-12.0f);
@@ -275,7 +451,50 @@ void PathtracerUI::buildUI(void)
     {
         ImGui::Indent(12.0f);
         {
-            updateAccum |= ImGui::Combo("Tech", (int*)&m_ui.denoiserSelection, m_ui.denoiserSelectionStrings);
+            auto addDlssUpscalerOptions = [&]() -> void {
+                if (SLWrapper::IsDLSSSupported())
+                {
+                    updateAccum |= ImGui::Combo("Upscaler", (int*)&m_ui.upscalerSelection, m_ui.upscalerSelectionStrings);
+
+                    if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
+                    {
+                        int dlssQualityMode = 0;
+                        switch (m_ui.dlsssrQualityMode)
+                        {
+                            case sl::DLSSMode::eUltraPerformance: dlssQualityMode = 0; break;
+                            case sl::DLSSMode::eMaxPerformance:   dlssQualityMode = 1; break;
+                            case sl::DLSSMode::eBalanced:         dlssQualityMode = 2; break;
+                            case sl::DLSSMode::eMaxQuality:       dlssQualityMode = 3; break;
+                            case sl::DLSSMode::eDLAA:             dlssQualityMode = 4; break;
+                        }
+                        ImGui::Combo("DLSS Quality", &dlssQualityMode, "UltraPerformance\0Performance\0Balanced\0Quality\0DLAA\0");
+                        switch (dlssQualityMode)
+                        {
+                            case 0: m_ui.dlsssrQualityMode = sl::DLSSMode::eUltraPerformance; break;
+                            case 1: m_ui.dlsssrQualityMode = sl::DLSSMode::eMaxPerformance; break;
+                            case 2: m_ui.dlsssrQualityMode = sl::DLSSMode::eBalanced; break;
+                            case 3: m_ui.dlsssrQualityMode = sl::DLSSMode::eMaxQuality; break;
+                            case 4: m_ui.dlsssrQualityMode = sl::DLSSMode::eDLAA; break;
+                        }
+                    }
+                }
+                else
+                {
+                    updateAccum |= ImGui::Combo("Upscaler", (int*)&m_ui.upscalerSelection, "None\0TAA\0");
+                }
+            };
+
+            if (SLWrapper::IsDLSSSupported())
+            {
+                updateAccum |= ImGui::Combo("Tech", (int*)&m_ui.denoiserSelection, m_ui.denoiserSelectionStrings);
+            }
+            else
+            {
+                // Fallback GUI when DLSS is NOT supported
+                static DenoiserSelection nonNvDenoiserSelection = DenoiserSelection::Nrd;
+                updateAccum |= ImGui::Combo("Tech", (int*)&nonNvDenoiserSelection, "None\0NRD\0Reference\0");
+                m_ui.denoiserSelection = (nonNvDenoiserSelection == DenoiserSelection::DlssRr) ? DenoiserSelection::Reference : nonNvDenoiserSelection;
+            }
 
             switch (m_ui.denoiserSelection)
             {
@@ -283,15 +502,198 @@ void PathtracerUI::buildUI(void)
                 {
                     m_ui.enableDenoiser = false;
                     m_ui.enableAccumulation = false;
+                    addDlssUpscalerOptions();
+                    if (m_prevDenoiserSelection != DenoiserSelection::None)
+                    {
+                        if (m_ui.upscalerSelection == UpscalerSelection::TAA)
+                        {
+                            m_ui.upscalerSelection = SLWrapper::IsDLSSSupported() ? UpscalerSelection::DLSS : UpscalerSelection::None;
+                        }
+                    }
+                    break;
+                }
+                case DenoiserSelection::Nrd:
+                {
+                    m_ui.enableDenoiser = true;
+                    m_ui.enableAccumulation = false;
+
+                    updateAccum |= ImGui::Combo("NRD Mode", (int*)&m_ui.nrdDenoiserMode, m_ui.nrdModeStrings);
+                    addDlssUpscalerOptions();
+                    if (m_prevDenoiserSelection != DenoiserSelection::Nrd)
+                    {
+                        if (m_ui.upscalerSelection == UpscalerSelection::None)
+                        {
+                            m_ui.upscalerSelection = SLWrapper::IsDLSSSupported() ? UpscalerSelection::DLSS : UpscalerSelection::TAA;
+                        }
+                        m_ui.enableDlfg = m_prevNrdDlfgEnabled;
+                    }
+
+                    if (ImGui::Button("Reset Denoiser"))
+                    {
+                        m_ui.forceResetDenoiser = true;
+                    }
+
+                    if (ImGui::CollapsingHeader("Common Settings"))
+                    {
+                        ImGui::Indent(12.0f);
+                        ImGui::SliderFloat("Disocclusion threshold", &m_ui.nrdCommonSettings.disocclusionThreshold, 0.01f, 0.02f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SliderFloat("Disocclusion threshold alternate", &m_ui.nrdCommonSettings.disocclusionThresholdAlternate, 0.02f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                        // TODO: Implement Disocclusion threshold mix
+                        // ImGui::Checkbox("Disocclusion threshold mix", &m_ui.nrdCommonSettings.isDisocclusionThresholdMixAvailable);
+#ifdef _DEBUG
+                        ImGui::Checkbox("Validation", &m_ui.nrdCommonSettings.enableValidation);
+#endif
+                        ImGui::Unindent(12.0f);
+                    }
+
+                    static const char* const checkerboardMode[] =
+                    {
+                        "Off",
+                        "Black",
+                        "White",
+                    };
+
+                    static const char* const hitDistanceReconstructionMode[] =
+                    {
+                        "Off",
+                        "3x3",
+                        "5x5",
+                    };
+
+                    switch (m_ui.nrdDenoiserMode)
+                    {
+                        case NrdMode::Reblur:
+                        {
+                            if (ImGui::CollapsingHeader("Reblur Settings"))
+                            {
+                                ImGui::Indent(12.0f);
+
+                                ImGui::SliderInt("History length (frames)", (int*)&m_ui.reblurSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM, "%d");
+                                ImGui::SliderInt("Fast history length (frames)", (int*)&m_ui.reblurSettings.maxFastAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM, "%d");
+                                ImGui::SliderInt("History fix (frames)", (int*)&m_ui.reblurSettings.historyFixFrameNum, 0, 3);
+                                ImGui::SliderFloat2("Pre-pass blur radius (px)", &m_ui.reblurSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Min blur radius (px)", &m_ui.reblurSettings.minBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Max blur radius (px)", &m_ui.reblurSettings.maxBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Lobe angle fraction", &m_ui.reblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Roughness fraction", &m_ui.reblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Responsive accumulation roughness", &m_ui.reblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Plane distance sensitivity", &m_ui.reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f, "%.3f");
+                                ImGui::SliderFloat2("Specular MV modification", m_ui.reblurSettings.specularProbabilityThresholdsForMvModification, 0.0f, 1.0f, "%.1f");
+                                if (m_ui.reblurSettings.enableAntiFirefly)
+                                {
+                                    ImGui::SliderFloat("Fire Fly Suppressor Min Relative Scale (%)", &m_ui.reblurSettings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f, "%.2f");
+                                }
+                                {
+                                    int v = (int)m_ui.reblurSettings.checkerboardMode;
+                                    ImGui::Combo("Checkerboard mode", &v, checkerboardMode, 3);
+                                    m_ui.reblurSettings.checkerboardMode = (nrd::CheckerboardMode)v;
+                                }
+                                {
+                                    int v = (int)m_ui.reblurSettings.hitDistanceReconstructionMode;
+                                    ImGui::Combo("HitT reconstruction mode", &v, hitDistanceReconstructionMode, 3);
+                                    m_ui.reblurSettings.hitDistanceReconstructionMode = (nrd::HitDistanceReconstructionMode)v;
+                                }
+
+                                if (ImGui::CollapsingHeader("Hit Distance"))
+                                {
+                                    ImGui::Indent(12.0f);
+                                    ImGui::SliderFloat("Constant Value", &m_ui.reblurSettings.hitDistanceParameters.A, 0.0f, 1000.0f, "%.1f");
+                                    ImGui::SliderFloat("ViewZ Based Linear Scale", &m_ui.reblurSettings.hitDistanceParameters.B, 0.0001f, 1000.0f, "%.1f");
+                                    ImGui::SliderFloat("Roughness Based Scale", &m_ui.reblurSettings.hitDistanceParameters.C, 1.0f, 1000.0f, "%.1f");
+                                    ImGui::SliderFloat("Absolute Value", &m_ui.reblurSettings.hitDistanceParameters.D, -1000.0f, 0.0f, "%.1f");
+                                    ImGui::Unindent(12.0f);
+                                }
+
+                                if (ImGui::CollapsingHeader("Antilag"))
+                                {
+                                    ImGui::Indent(12.0f);
+                                    ImGui::SliderFloat2("Sigma scale", &m_ui.reblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 3.0f, "%.1f");
+                                    ImGui::SliderFloat2("Power", &m_ui.reblurSettings.antilagSettings.luminanceSensitivity, 1.0f, 3.0f, "%.2f");
+                                    ImGui::Unindent(12.0f);
+                                }
+
+                                ImGui::Checkbox("Anti-firefly", &m_ui.reblurSettings.enableAntiFirefly);
+                                ImGui::Checkbox("Performance mode", &m_ui.reblurSettings.enablePerformanceMode);
+                                ImGui::Checkbox("Pre-pass only for specular motion estimation", &m_ui.reblurSettings.usePrepassOnlyForSpecularMotionEstimation);
+
+                                ImGui::Unindent(12.0f);
+                            }
+
+                            break;
+                        }
+                        case NrdMode::Relax:
+                        {
+                            if (ImGui::CollapsingHeader("Relax Settings"))
+                            {
+                                ImGui::Indent(12.0f);
+
+                                ImGui::SliderFloat2("Pre-pass diffuse blur radius (px)", &m_ui.relaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat2("Pre-pass specular blur radius (px)", &m_ui.relaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderInt2("Diffuse history length (frames)", (int*)&m_ui.relaxSettings.diffuseMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM, "%d");
+                                ImGui::SliderInt2("Specular history length (frames)", (int*)&m_ui.relaxSettings.specularMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM, "%d");
+                                ImGui::SliderInt("History fix (frames)", (int*)&m_ui.relaxSettings.historyFixFrameNum, 0, 3);
+                                ImGui::SliderFloat2("Diffuse phi luminance", &m_ui.relaxSettings.diffusePhiLuminance, 0.0f, 10.0f, "%.1f");
+                                ImGui::SliderFloat2("Specular phi luminance", &m_ui.relaxSettings.specularPhiLuminance, 0.0f, 10.0f, "%.1f");
+                                ImGui::SliderFloat2("Lobe angle fraction", &m_ui.relaxSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Roughness fraction", &m_ui.relaxSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Specular variance boost", &m_ui.relaxSettings.specularVarianceBoost, 0.0f, 8.0f, "%.2f");
+                                ImGui::SliderFloat("Specular lobe angle slack", &m_ui.relaxSettings.specularLobeAngleSlack, 0.0f, 89.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                                ImGui::SliderFloat("History fix normal power", &m_ui.relaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
+                                ImGui::SliderFloat("History lamping sigma scale", &m_ui.relaxSettings.historyClampingColorBoxSigmaScale, 0.0f, 10.0f, "%.1f");
+                                ImGui::SliderInt("Spatial variance history (frames)", (int*)&m_ui.relaxSettings.spatialVarianceEstimationHistoryThreshold, 0, 10);
+                                ImGui::SliderInt("A-trous iterations", (int*)&m_ui.relaxSettings.atrousIterationNum, 2, 8);
+                                ImGui::SliderFloat2("Min luminance weight", &m_ui.relaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Depth threshold", &m_ui.relaxSettings.depthThreshold, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                                ImGui::SliderFloat3("Confidence driven relaxation", &m_ui.relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat3("Relaxation", &m_ui.relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+
+                                {
+                                    int v = (int)m_ui.relaxSettings.checkerboardMode;
+                                    ImGui::Combo("Checkerboard mode", &v, checkerboardMode, 3);
+                                    m_ui.relaxSettings.checkerboardMode = (nrd::CheckerboardMode)v;
+                                }
+
+                                {
+                                    int v = (int)m_ui.relaxSettings.hitDistanceReconstructionMode;
+                                    ImGui::Combo("HitT reconstruction mode", &v, hitDistanceReconstructionMode, 3);
+                                    m_ui.relaxSettings.hitDistanceReconstructionMode = (nrd::HitDistanceReconstructionMode)v;
+                                }
+
+                                ImGui::Checkbox("Anti-firefly", &m_ui.relaxSettings.enableAntiFirefly);
+                                ImGui::Checkbox("Roughness edge stopping", &m_ui.relaxSettings.enableRoughnessEdgeStopping);
+
+                                if (ImGui::CollapsingHeader("Antilag"))
+                                {
+                                    ImGui::Indent(12.0f);
+                                    ImGui::SliderFloat("Acceleration amount", &m_ui.relaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f, "%.2f");
+                                    ImGui::SliderFloat("Spatial sigma scale", &m_ui.relaxSettings.antilagSettings.spatialSigmaScale, 0.01f, 10.0f, "%.2f");
+                                    ImGui::SliderFloat("Temporal sigma scale", &m_ui.relaxSettings.antilagSettings.temporalSigmaScale, 0.01f, 10.0f, "%.2f");
+                                    ImGui::SliderFloat("Reset amount", &m_ui.relaxSettings.antilagSettings.resetAmount, 0.0f, 1.0f, "%.2f");
+                                    ImGui::Unindent(12.0f);
+                                }
+
+                                ImGui::Unindent(12.0f);
+                            }
+
+                            break;
+                        }
+                    }
+
+                    m_prevNrdDlfgEnabled = m_ui.enableDlfg;
                     break;
                 }
                 case DenoiserSelection::DlssRr:
                 {
                     m_ui.enableDenoiser = true;
                     m_ui.enableAccumulation = false;
+                    if (m_prevDenoiserSelection != DenoiserSelection::DlssRr)
+                    {
+                        m_ui.enableDlfg = m_prevDlssrrDlfgEnabled;
+                    }
+                    m_prevDlssrrDlfgEnabled = m_ui.enableDlfg;
 
                     int dlssQualityMode = 0;
-                    switch (m_ui.dlssQualityMode)
+                    switch (m_ui.dlssrrQualityMode)
                     {
                         case sl::DLSSMode::eUltraPerformance: dlssQualityMode = 0; break;
                         case sl::DLSSMode::eMaxPerformance:   dlssQualityMode = 1; break;
@@ -302,18 +704,27 @@ void PathtracerUI::buildUI(void)
                     ImGui::Combo("DLSS Quality", &dlssQualityMode, "UltraPerformance\0Performance\0Balanced\0Quality\0DLAA\0");
                     switch (dlssQualityMode)
                     {
-                        case 0: m_ui.dlssQualityMode = sl::DLSSMode::eUltraPerformance; break;
-                        case 1: m_ui.dlssQualityMode = sl::DLSSMode::eMaxPerformance; break;
-                        case 2: m_ui.dlssQualityMode = sl::DLSSMode::eBalanced; break;
-                        case 3: m_ui.dlssQualityMode = sl::DLSSMode::eMaxQuality; break;
-                        case 4: m_ui.dlssQualityMode = sl::DLSSMode::eDLAA; break;
+                        case 0: m_ui.dlssrrQualityMode = sl::DLSSMode::eUltraPerformance; break;
+                        case 1: m_ui.dlssrrQualityMode = sl::DLSSMode::eMaxPerformance; break;
+                        case 2: m_ui.dlssrrQualityMode = sl::DLSSMode::eBalanced; break;
+                        case 3: m_ui.dlssrrQualityMode = sl::DLSSMode::eMaxQuality; break;
+                        case 4: m_ui.dlssrrQualityMode = sl::DLSSMode::eDLAA; break;
                     }
-
                     break;
                 }
                 case DenoiserSelection::Reference:
                 {
+                    m_ui.enableDenoiser = false;
                     m_ui.enableAccumulation = true;
+                    m_ui.upscalerSelection = UpscalerSelection::None;
+                    m_ui.enableDlfg = false;
+                    m_ui.reflexMode = sl::ReflexMode::eOff;
+                    if (m_ui.enableAnimations == true)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
+                        ImGui::Text("Warning: Reference Mode is auto-disabled when Animation is active.");
+                        ImGui::PopStyleColor();
+                    }
                     break;
                 }
             }
@@ -433,7 +844,9 @@ void PathtracerUI::buildUI(void)
                 m_showRefreshSceneRemindText |= ImGui::SliderFloat("Radius Scale", &m_ui.hairRadiusScale, 0.01f, 5.0f);
                 if (m_showRefreshSceneRemindText)
                 {
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
                     ImGui::Text("Radius Scale is changed. Please refresh scene.");
+                    ImGui::PopStyleColor();
                 }
 
                 ImGui::Indent(-12.0f);
@@ -565,7 +978,6 @@ void PathtracerUI::buildUI(void)
         ImGui::Indent(-12.0f);
     }
 
-#ifdef _DEBUG
     // Animation
     if (m_ui.showAnimationUI)
     {
@@ -575,18 +987,35 @@ void PathtracerUI::buildUI(void)
             updateAccum |= ImGui::Checkbox("Animations", &m_ui.enableAnimations);
             if (m_ui.enableAnimations)
             {
-                ImGui::SliderFloat("Animation Speed (Seconds Per Frame)", &m_ui.animationFps, 0.1f, 240.0f);
+                ImGui::SliderFloat("Speed(Seconds/Frame)", &m_ui.animationFps, 0.1f, 240.0f);
 
+                ImGui::Checkbox("Enable Animation Smoothing", &m_ui.enableAnimationSmoothing);
+                if(m_ui.enableAnimationSmoothing)
+                {
+                    ImGui::SliderFloat("Smoothing Factor", &m_ui.animationSmoothingFactor, 1.0f, 256.0f);
+                }
+
+#if _DEBUG
                 ImGui::Checkbox("Enable Animation Debugging", &m_ui.enableAnimationDebugging);
                 if (m_ui.enableAnimationDebugging)
                 {
-                    ImGui::SliderInt("Animation Keyframe Index Override", &m_ui.animationKeyFrameIndexOverride, 0, 1000);
+                    if (ImGui::Button("-")) {
+                        m_ui.animationKeyFrameIndexOverride = std::max(m_ui.animationKeyFrameIndexOverride - 1, 0);
+                    }
+                    ImGui::SameLine();
+                    ImGui::SliderInt("##slider", &m_ui.animationKeyFrameIndexOverride, 0, 1000);
+                    ImGui::SameLine();
+                    if (ImGui::Button("+")) {
+                        m_ui.animationKeyFrameIndexOverride = std::min(m_ui.animationKeyFrameIndexOverride + 1, 1000);
+                    }
+                    ImGui::SameLine();
+                    ImGui::Text("Animation Keyframe Index Override");
                     ImGui::SliderFloat("Animation Keyframe Weight Override", &m_ui.animationKeyFrameWeightOverride, 0.1f, 1.0f);
                 }
+#endif
             }
         }
     }
-#endif
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Tone mapping:", ImGuiTreeNodeFlags_None))
@@ -612,4 +1041,6 @@ void PathtracerUI::buildUI(void)
     }
 
     ImGui::PopFont();
+
+    m_prevDenoiserSelection = m_ui.denoiserSelection;
 };

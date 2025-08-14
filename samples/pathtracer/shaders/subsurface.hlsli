@@ -15,15 +15,7 @@
 #include <rtxcr/SubsurfaceScattering.hlsli>
 #include <rtxcr/Transmission.hlsli>
 
-bool isSubsurfaceMaterial(const uint flags)
-{
-    return (flags & MaterialFlags_SubsurfaceScattering) != 0;
-}
-
-bool isEyesCorneaMaterial(const MaterialConstants material)
-{
-    return material.domain == MaterialDomain_Transmissive;
-}
+#include "subsurfaceMaterial.hlsli"
 
 float3 evalSingleScatteringTransmission(
     const MaterialSample initialSssMaterial,
@@ -78,7 +70,9 @@ float3 evalSingleScatteringTransmission(
                     GeomAttr_All,
                     hitPos,
                     payload.HitT(),
-                    payload.objectRayDirection);
+                    payload.objectRayDirection,
+                    false,
+                    initialVertexBuffer); // Dummy Buffer
 #else
                 // TODO: Investigate the reason we need this WAR here for VK
                 GeometrySample geometrySample = getGeometryFromHit(
@@ -93,6 +87,7 @@ float3 evalSingleScatteringTransmission(
                     false,
                     payload.lssObjectPositionAndRadius0,
                     payload.lssObjectPositionAndRadius1,
+                    false,
                     t_InstanceData,
                     t_GeometryData,
                     t_MaterialConstants);
@@ -181,7 +176,9 @@ float3 evalSingleScatteringTransmission(
                     GeomAttr_All,
                     scatteringRay.Origin,
                     scatteringPayload.HitT(),
-                    scatteringPayload.objectRayDirection);
+                    scatteringPayload.objectRayDirection,
+                    false,
+                    initialVertexBuffer); // Dummy Buffer
 #else
                 GeometrySample geometrySample = getGeometryFromHit(
                     scatteringPayload.instanceID,
@@ -195,6 +192,7 @@ float3 evalSingleScatteringTransmission(
                     false,
                     scatteringPayload.lssObjectPositionAndRadius0,
                     scatteringPayload.lssObjectPositionAndRadius1,
+                    false,
                     t_InstanceData,
                     t_GeometryData,
                     t_MaterialConstants);
@@ -320,17 +318,17 @@ float3 evaluateSubsurfaceNEE(
                 g_Lighting.view.matViewToWorld[1][2],
                 g_Lighting.view.matViewToWorld[2][2]);
 
+            if (Rand(rngState) <= 0.5f)
+            {
+                subsurfaceInteraction.normal = -cameraDirection;
+                subsurfaceInteraction.tangent = cameraUp;
+                subsurfaceInteraction.biTangent = cross(cameraUp, -cameraDirection);
+            }
+
             uint effectiveSample = 0;
 
             for (uint sssSampleIndex = 0; sssSampleIndex < g_Global.sssSampleCount; ++sssSampleIndex)
             {
-                if (Rand(rngState) <= 0.5f)
-                {
-                    subsurfaceInteraction.normal = -cameraDirection;
-                    subsurfaceInteraction.tangent = cameraUp;
-                    subsurfaceInteraction.biTangent = cross(cameraUp, -cameraDirection);
-                }
-
                 RTXCR_SubsurfaceSample subsurfaceSample;
 
                 const float2 rand2 = float2(Rand(rngState), Rand(rngState));
@@ -354,7 +352,9 @@ float3 evaluateSubsurfaceNEE(
                         GeomAttr_All,
                         subsurfaceSample.samplePosition,
                         samplePayload.HitT(),
-                        samplePayload.objectRayDirection);
+                        samplePayload.objectRayDirection,
+                        false,
+                        initialVertexBuffer); // Dummy Buffer
 
                     const MaterialSample materialSample = SampleGeometryMaterial(geometrySample, 0, 0, 0, MatAttr_All, s_MaterialSampler);
                     const float3 sampleGeometryNormal = geometrySample.faceNormal;

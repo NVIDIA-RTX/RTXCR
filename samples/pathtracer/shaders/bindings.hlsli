@@ -21,20 +21,25 @@ StructuredBuffer<InstanceData>      t_InstanceData                      : regist
 StructuredBuffer<GeometryData>      t_GeometryData                      : register(t2, space0);
 StructuredBuffer<MaterialConstants> t_MaterialConstants                 : register(t3, space0);
 Texture2D<float4>                   t_EnvironmentMap                    : register(t4, space0);
+StructuredBuffer<uint>              t_instanceMorphTargetMetaDataBuffer : register(t5, space0);
 
 RWTexture2D<float4>                 u_Output                            : register(u0, space0);
 SamplerState                        s_MaterialSampler                   : register(s0, space0);
 
-// DLSS-RR
+// DLSS/NRD
 Texture2D<float>                    t_OutputViewSpaceZ                  : register(t0, space1);
 Texture2D<float4>                   t_OutputNormalRoughness             : register(t1, space1);
 Texture2D<float4>                   t_OutputMotionVectors               : register(t2, space1);
 Texture2D<float4>                   t_OutputEmissive                    : register(t3, space1);
 Texture2D<float4>                   t_OutputDiffuseAlbedo               : register(t4, space1);
 Texture2D<float4>                   t_OutputSpecularAlbedo              : register(t5, space1);
+RWTexture2D<float4>                 u_OutputDiffuseRadianceHitDistance  : register(u0, space1);
+RWTexture2D<float4>                 u_OutputSpecularRadianceHitDistance : register(u1, space1);
 Texture2D<float2>                   t_OutputScreenSpaceMotionVectors    : register(t6, space1);
+RWTexture2D<float>                  u_OutputSpecularHitDistance         : register(u2, space1);
+
+// DLSS-SR
 Texture2D<float>                    t_OutputDeviceZ                     : register(t7, space1);
-RWTexture2D<float>                  u_OutputSpecularHitDistance         : register(u0, space1);
 
 // Bindless Resources
 VK_BINDING(0, 2) ByteAddressBuffer  t_BindlessBuffers[]                 : register(t0, space2);

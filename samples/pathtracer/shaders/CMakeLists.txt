@@ -14,17 +14,21 @@ file(GLOB_RECURSE shaders "*.hlsl" "*.hlsli")
 set(project pathtracer)
 set(folder "Samples/Pathtracer")
 
+option (NRD_EMBEDS_SPIRV_SHADERS "NRD embeds SPIRV shaders" OFF)
+option (NRD_EMBEDS_DXIL_SHADERS "NRD embeds DXIL shaders" OFF)
+option (NRD_EMBEDS_DXBC_SHADERS "NRD embeds DXBC shaders" OFF)
+
 # Set External includes
 set(EXTERNAL_DIR ${CMAKE_SOURCE_DIR}/external)
 
 # Set SDK includes
 set(RTXCR_SDK_DIR ${CMAKE_SOURCE_DIR}/libraries)
 
-set (SHADERMAKE_GENERAL_ARGS_SPIRV "-I ${EXTERNAL_DIR}/MathLib
+set (SHADERMAKE_GENERAL_ARGS_SPIRV "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders/Include
                                     -I ${CMAKE_CURRENT_SOURCE_DIR}/..
                                     -I ${RTXCR_SDK_DIR}/rtxcr/material/shaders/include
                                     -I ${RTXCR_SDK_DIR}/rtxcr/geometry/shaders/include")
-set (SHADERMAKE_GENERAL_ARGS_DXIL "-I ${EXTERNAL_DIR}/MathLib
+set (SHADERMAKE_GENERAL_ARGS_DXIL "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders/Include
                                    -I ${CMAKE_CURRENT_SOURCE_DIR}/..
                                    -I ${RTXCR_SDK_DIR}/rtxcr/material/shaders/include
                                    -I ${RTXCR_SDK_DIR}/rtxcr/geometry/shaders/include")
@@ -45,5 +49,5 @@ donut_compile_shaders(
         SHADERMAKE_OPTIONS_DXIL ${SHADERMAKE_GENERAL_ARGS_DXIL}
 )
 
-add_dependencies(${project} ${project}_shaders)
+add_dependencies(${project} ${project}_shaders nrd_shaders)
 set_target_properties(${project} PROPERTIES FOLDER ${folder})

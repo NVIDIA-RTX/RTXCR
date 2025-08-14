@@ -19,13 +19,18 @@ ConstantBuffer<MorphTargetConstants> g_Constants                   : register(b0
 StructuredBuffer<float4>             t_MorphTargetKeyframeData     : register(t0);
 StructuredBuffer<float4>             t_MorphTargetNextKeyframeData : register(t1);
 StructuredBuffer<LineSegment>        t_LineSegments                : register(t2);
+
+#if RTXCR_CURVE_TESSELLATION_TYPE != RTXCR_CURVE_TESSELLATION_TYPE_LSS
 Buffer<uint>                         t_MeshIndexBuffer             : register(t3);
+#endif
 
 RWByteAddressBuffer                  u_MorphTargetPosition         : register(u0);
-RWBuffer<uint>                       u_MorphTargetNormal           : register(u1);
-RWBuffer<uint>                       u_MorphTargetTangent          : register(u2);
+RWStructuredBuffer<uint>             u_MorphTargetNormal           : register(u1);
+RWStructuredBuffer<uint>             u_MorphTargetTangent          : register(u2);
 
 #define VERTEX_PER_FACE 6
+
+#define FLOAT3_SIZE_IN_BYTE 12
 
 // Polytube
 #define POLY_TUBE_ORDER 3
@@ -134,7 +139,7 @@ void convertToTrianglePolyTubes(const uint index)
     // Position
     const float polyTubesVolumeCompensationScale = 1.0f / (sin(RTXCR_PI / POLY_TUBE_ORDER) / (RTXCR_PI / POLY_TUBE_ORDER));
     const float3 vertexPosition = morphTargetPosition[morphTargetPositionIndex] + r[morphTargetPositionIndex] * v * polyTubesVolumeCompensationScale;
-    u_MorphTargetPosition.Store3(index * 4 * 3, asuint(vertexPosition));
+    u_MorphTargetPosition.Store3(index * FLOAT3_SIZE_IN_BYTE, asuint(vertexPosition));
 
     // Normal
     u_MorphTargetNormal[index] = vectorToSnorm8(v);
@@ -190,7 +195,7 @@ void convertToDisjointOrthogonalTriangleStrips(const uint index)
     // Position
     const float dotsVolumeCompensationScale = 1.0f / (sin(RTXCR_PI / 4.0f) / (RTXCR_PI / 4.0f));
     const float3 vertexPosition = morphTargetPosition[morphTargetPositionIndex] + weight[mappingIndex] * v[face] * dotsVolumeCompensationScale;
-    u_MorphTargetPosition.Store3(index * 4 * 3, asuint(vertexPosition));
+    u_MorphTargetPosition.Store3(index * FLOAT3_SIZE_IN_BYTE, asuint(vertexPosition));
 
     // Normal
     const float normalSign = dotsNormalSignMapping[mappingIndex];
@@ -206,26 +211,21 @@ void convertToDisjointOrthogonalTriangleStrips(const uint index)
 
 void convertToLinearSweptSpheres(const uint globalIndex)
 {
-    // TODO: Consider updating multiple vertices per thread
-    uint index = t_MeshIndexBuffer[globalIndex];
-    uint nextIndex = t_MeshIndexBuffer[globalIndex + 1];
+    // TODO: Provide Index buffer support for LSS
+    const uint index = globalIndex;
+    const uint nextIndex = globalIndex + 1;
 
-    uint lineSegmentIndex = globalIndex;
+    uint lineSegmentIndex = globalIndex / 2;
     const LineSegment lineSegment = t_LineSegments[lineSegmentIndex];
     lineSegmentIndex += lineSegment.geometryIndex;
 
-    float3 morphTargetLerpData = lerp(t_MorphTargetKeyframeData[lineSegmentIndex], t_MorphTargetNextKeyframeData[lineSegmentIndex], g_Constants.lerpWeight).xyz;
-    float3 vertexPosition = lineSegment.point0 + morphTargetLerpData;
+    const uint morphTargetVertexIndex = (globalIndex % 2 == 0) ? lineSegmentIndex : lineSegmentIndex + 1;
+
+    const float3 morphTargetLerpData = lerp(t_MorphTargetKeyframeData[morphTargetVertexIndex], t_MorphTargetNextKeyframeData[morphTargetVertexIndex], g_Constants.lerpWeight).xyz;
+    const float3 vertexPosition = (globalIndex % 2 == 0 ? lineSegment.point0 : lineSegment.point1) + morphTargetLerpData;
 
     // Position
-    u_MorphTargetPosition.Store3(index * 4 * 3, asuint(vertexPosition));
-
-    if (globalIndex == g_Constants.vertexCount - 1 || nextIndex != index + 1)
-    {
-        // float3 morphTargetLerpData = lerp(t_MorphTargetKeyframeData[lineSegmentIndex + 1], t_MorphTargetNextKeyframeData[lineSegmentIndex + 1], g_Constants.lerpWeight).xyz;
-        float3 vertexPosition = lineSegment.point1 + morphTargetLerpData;
-        u_MorphTargetPosition.Store3((index + 1) * 4 * 3, asuint(vertexPosition));
-    }
+    u_MorphTargetPosition.Store3(index * FLOAT3_SIZE_IN_BYTE, asuint(vertexPosition));
 }
 
 #endif // RTXCR_CURVE_TESSELLATION_TYPE

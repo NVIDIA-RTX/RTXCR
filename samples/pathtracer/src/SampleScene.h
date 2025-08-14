@@ -37,11 +37,13 @@ public:
               std::shared_ptr<donut::engine::SceneTypeFactory> sceneTypeFactory,
               const std::filesystem::path& sceneFileName);
 
-    void FinishLoading(const uint32_t frameIndex);
+    void FinishLoading(nvrhi::IDevice* device, donut::engine::DescriptorTableManager* descriptorTable, const uint32_t frameIndex);
 
     void Unload();
 
     bool Animate(
+        nvrhi::IDevice* device,
+        donut::engine::DescriptorTableManager* descriptorTable,
         const float fElapsedTimeSeconds,
         const bool isSceneLoaded,
         const uint32_t frameIndex,

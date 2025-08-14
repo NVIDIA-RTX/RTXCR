@@ -13,3 +13,6 @@
 [submodule "libraries/rtxcr/geometry"]
 	path = libraries/rtxcr/geometry
 	url = https://github.com/NVIDIA-RTX/RTXCR-Geometry-Library.git
+[submodule "external/RayTracingDenoiser"]
+	path = external/RayTracingDenoiser
+	url = https://github.com/NVIDIA-RTX/NRD.git

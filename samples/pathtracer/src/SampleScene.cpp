@@ -68,7 +68,7 @@ bool SampleScene::Load(nvrhi::IDevice* device,
     return false;
 }
 
-void SampleScene::FinishLoading(const uint32_t frameIndex)
+void SampleScene::FinishLoading(nvrhi::IDevice* device, donut::engine::DescriptorTableManager* descriptorTable, const uint32_t frameIndex)
 {
     // Tessellate curve line segments into Polytubes/DOTS/LSS and cache them on CPU
     m_curveTessellation->convertToTrianglePolyTubes(m_scene->GetSceneGraph()->GetMeshInstances());
@@ -76,7 +76,7 @@ void SampleScene::FinishLoading(const uint32_t frameIndex)
     m_curveTessellation->convertToLinearSweptSpheres(m_scene->GetSceneGraph()->GetMeshInstances());
 
     // Ensure that the currently chosen tessellation type is ready to be uploaded to the GPU
-    m_curveTessellation->replacingSceneMesh(m_currentTessellationType, m_scene->GetSceneGraph()->GetMeshInstances());
+    m_curveTessellation->replacingSceneMesh(device, descriptorTable, m_currentTessellationType, m_scene->GetSceneGraph()->GetMeshInstances());
 
     m_scene->FinishedLoading(frameIndex);
 
@@ -138,9 +138,13 @@ void SampleScene::Unload()
 {
     m_sunLight = nullptr;
     m_headLight = nullptr;
+
+    m_curveTessellation->clear();
 }
 
 bool SampleScene::Animate(
+    nvrhi::IDevice* device,
+    donut::engine::DescriptorTableManager* descriptorTable,
     const float fElapsedTimeSeconds,
     const bool isSceneLoaded,
     const uint32_t frameIndex,
@@ -175,7 +179,7 @@ bool SampleScene::Animate(
     if (m_currentTessellationType != m_ui.hairTessellationType)
     {
         m_currentTessellationType = m_ui.hairTessellationType;
-        m_curveTessellation->replacingSceneMesh(m_currentTessellationType, m_scene->GetSceneGraph()->GetMeshInstances());
+        m_curveTessellation->replacingSceneMesh(device, descriptorTable, m_currentTessellationType, m_scene->GetSceneGraph()->GetMeshInstances());
 
         m_scene->FinishedLoading(frameIndex);
 

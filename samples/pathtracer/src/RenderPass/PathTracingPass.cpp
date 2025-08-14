@@ -53,6 +53,7 @@ void PathTracingPass::createRayTracingBindingLayout()
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(2), // geometry
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(3), // materials
         nvrhi::BindingLayoutItem::Texture_SRV(4), // Environment Map
+        nvrhi::BindingLayoutItem::StructuredBuffer_SRV(5), // Instance Mask for Morph Target
         nvrhi::BindingLayoutItem::Sampler(0),
         nvrhi::BindingLayoutItem::Texture_UAV(0), // path tracer output
         nvrhi::BindingLayoutItem::TypedBuffer_UAV(RTXCR_NVAPI_SHADER_EXT_SLOT), // for nvidia extensions
@@ -60,7 +61,7 @@ void PathTracingPass::createRayTracingBindingLayout()
 
     m_bindingLayout = m_device->createBindingLayout(bindingLayoutDesc);
 
-    // Denoiser
+    // DLSS/NRD
     {
         bindingLayoutDesc.registerSpace = 1;
         bindingLayoutDesc.bindings = {
@@ -73,6 +74,8 @@ void PathTracingPass::createRayTracingBindingLayout()
             nvrhi::BindingLayoutItem::Texture_SRV(6),
             nvrhi::BindingLayoutItem::Texture_SRV(7),
             nvrhi::BindingLayoutItem::Texture_UAV(0),
+            nvrhi::BindingLayoutItem::Texture_UAV(1),
+            nvrhi::BindingLayoutItem::Texture_UAV(2),
         };
         m_denoiserBindingLayout = m_device->createBindingLayout(bindingLayoutDesc);
     }
@@ -143,7 +146,11 @@ bool PathTracingPass::RecreateRayTracingPipeline(const nvrhi::BindingLayoutHandl
     };
 
     pipelineDesc.maxPayloadSize = max(sizeof(RayPayload), sizeof(ShadowRayPayload));
-    pipelineDesc.hlslExtensionsUAV = int32_t(RTXCR_NVAPI_SHADER_EXT_SLOT);
+    if (m_device->queryFeatureSupport(nvrhi::Feature::LinearSweptSpheres))
+    {
+        // We only enable hlslExtensionsUAV for the devices that support LSS
+        pipelineDesc.hlslExtensionsUAV = int32_t(RTXCR_NVAPI_SHADER_EXT_SLOT);
+    }
 
     m_pipelinePermutation.pipeline = m_device->createRayTracingPipeline(pipelineDesc);
     m_pipelinePermutation.shaderTable = m_pipelinePermutation.pipeline->createShaderTable();
@@ -160,12 +167,13 @@ bool PathTracingPass::RecreateRayTracingPipeline(const nvrhi::BindingLayoutHandl
 void PathTracingPass::Dispatch(
     nvrhi::CommandListHandle commandList,
     const ResourceManager::PathTracerResources& renderTargets,
+    const ResourceManager::DenoiserResources& denoiserResources,
     const nvrhi::SamplerHandle pathTracingSampler,
     std::shared_ptr<donut::engine::DescriptorTableManager> descriptorTable,
     const dm::uint2 renderSize,
     const bool isEnvMapUpdated)
 {
-    if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS() || dm::any(m_renderSize != renderSize) || isEnvMapUpdated)
+    if (m_accelerationStructure->IsRebuildAS() || dm::any(m_renderSize != renderSize) || isEnvMapUpdated)
     {
         m_device->waitForIdle();
 
@@ -178,6 +186,7 @@ void PathTracingPass::Dispatch(
             nvrhi::BindingSetItem::StructuredBuffer_SRV(2, m_scene->GetNativeScene()->GetGeometryBuffer()),
             nvrhi::BindingSetItem::StructuredBuffer_SRV(3, m_scene->GetNativeScene()->GetMaterialBuffer()),
             nvrhi::BindingSetItem::Texture_SRV(4, renderTargets.environmentMapTexture->texture),
+            nvrhi::BindingSetItem::StructuredBuffer_SRV(5, renderTargets.instanceMorphTargetMetaDataBuffer),
             nvrhi::BindingSetItem::Sampler(0, pathTracingSampler),
             nvrhi::BindingSetItem::Texture_UAV(0, renderTargets.pathTracerOutputTexture),
             nvrhi::BindingSetItem::TypedBuffer_UAV(RTXCR_NVAPI_SHADER_EXT_SLOT, nullptr), // for nvidia extensions
@@ -207,7 +216,9 @@ void PathTracingPass::Dispatch(
             nvrhi::BindingSetItem::Texture_SRV(5, gBufferResources.specularAlbedoTexture),
             nvrhi::BindingSetItem::Texture_SRV(6, gBufferResources.screenSpaceMotionVectorTexture),
             nvrhi::BindingSetItem::Texture_SRV(7, gBufferResources.deviceZTexture),
-            nvrhi::BindingSetItem::Texture_UAV(0, gBufferResources.specularHitDistanceTexture),
+            nvrhi::BindingSetItem::Texture_UAV(0, denoiserResources.noisyDiffuseRadianceHitT),
+            nvrhi::BindingSetItem::Texture_UAV(1, denoiserResources.noisySpecularRadianceHitT),
+            nvrhi::BindingSetItem::Texture_UAV(2, gBufferResources.specularHitDistanceTexture),
         };
 
         m_denoiserBindingSet = m_device->createBindingSet(denoiserBindingSetDesc, m_denoiserBindingLayout);

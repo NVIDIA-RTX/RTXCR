@@ -15,6 +15,7 @@
 ConstantBuffer<GlobalConstants>     g_Global                    : register(b0);
 RWTexture2D<float4>                 pathTracingOutputBuffer     : register(u0);
 RWTexture2D<float4>                 accumulationBuffer          : register(u1);
+Texture2D<float4>                   denoiserValidationTexture   : register(t0);
 
 float CalculateLuminance(float3 color)
 {
@@ -60,9 +61,17 @@ void main_ps(in float4 pos: SV_Position, in float2 uv: UV, out float4 output: SV
     }
 
     color.xyz = ToneMap(color.xyz);
-	
+
     if (g_Global.clamp)
+    {
         color = saturate(color);
+    }
+
+    if (g_Global.enableDenoiserValidationLayer)
+    {
+        const float4 validation = denoiserValidationTexture[pos.xy];
+        color.rgb = lerp(color.rgb, validation.rgb, validation.w);
+    }
 
     output = float4(color);
 }

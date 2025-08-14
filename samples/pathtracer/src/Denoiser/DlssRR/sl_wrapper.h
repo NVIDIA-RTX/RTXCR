@@ -31,14 +31,15 @@
 #endif
 
 #include <sl.h>
-#include <sl_consts.h>
 #include <sl_hooks.h>
-#include <sl_version.h>
 
 #include <sl_dlss.h>
 #include <sl_dlss_d.h>
+#include <sl_dlss_g.h>
+#include <sl_reflex.h>
 
 #include <filesystem>
+#include <donut/app/AftermathCrashDump.h>
 
 class SLWrapper
 {
@@ -53,7 +54,7 @@ public:
     static void ShutdownStreamline();
 
 #if USE_DX12
-    static bool GetSupportedDXGIAdapter(const std::vector<sl::Feature>& featuresToLoad, IDXGIAdapter** outAdapter);
+    static bool IsSupportedDirectXDevice(const std::vector<sl::Feature>& featuresToLoad, nvrhi::IDevice* device);
 #endif
 
 #if USE_VK
@@ -78,34 +79,60 @@ public:
     }
 
 private:
-    nvrhi::GraphicsAPI m_GraphicsAPI;
+    static nvrhi::GraphicsAPI m_GraphicsAPI;
 
-    sl::ViewportHandle m_ViewportHandle;
-    sl::FrameToken* m_FrameToken = nullptr;
+    static sl::ViewportHandle m_ViewportHandle;
+    static sl::FrameToken* m_FrameToken;
 
-    sl::Resource NvRHITextureToSL(nvrhi::TextureHandle texture, nvrhi::ResourceStates stateBits);
-    void* NvRHICommandListToNative(nvrhi::CommandListHandle commandList);
+    static bool m_dlssAvailable;
+    static bool m_dlssrrAvailable;
+
+    static bool m_dlssgAvailable;
+    static bool m_dlssgTriggerswapchainRecreation;
+    static bool m_dlssgShoudLoad;
+    static sl::DLSSGOptions m_dlssgConsts;
+    static sl::DLSSGState m_dlssgSettings;
+
+    static bool m_reflexAvailable;
+    static bool m_reflexDriverFlashIndicatorEnable;
+
+    static bool m_pclAvailable;
+
+    static sl::Resource NvRHITextureToSL(nvrhi::TextureHandle texture, nvrhi::ResourceStates stateBits);
+    static void* NvRHICommandListToNative(nvrhi::CommandListHandle commandList);
+
+    static void setSlFeatureFlags(const sl::Feature feature);
 
 public:
     SLWrapper(nvrhi::GraphicsAPI api)
-        : m_GraphicsAPI(api)
-        , m_ViewportHandle(0)
     {
+        m_GraphicsAPI = api;
+
         // If SL has already been initialized, call AdvanceFrame to create a frame token.
         // Otherwise, it will be the caller's responsibility to do so before using the wrapper.
-        if (s_SlInitialized) {
+        if (s_SlInitialized)
+        {
             AdvanceFrame();
         }
     }
 
-    bool AdvanceFrame();
+    static bool AdvanceFrame();
 
-    bool SetConstants(sl::Constants& consts);
+    static  bool SetConstants(sl::Constants& consts);
 
-    bool GetDLSSSettings(const sl::DLSSOptions& options, sl::DLSSOptimalSettings& outSettings);
-    bool GetDLSSRRSettings(const sl::DLSSDOptions& options, sl::DLSSDOptimalSettings& outSettings);
+    static bool GetDLSSSettings(const sl::DLSSOptions& options, sl::DLSSOptimalSettings& outSettings);
+    static bool GetDLSSRRSettings(const sl::DLSSDOptions& options, sl::DLSSDOptimalSettings& outSettings);
 
-    bool TagDLSSBuffers(
+    static void FeatureLoad(sl::Feature feature, const bool turn_on);
+
+    static bool TagDLSSGeneralBuffers(
+        nvrhi::CommandListHandle commandList,
+        dm::uint2 renderSize,
+        dm::uint2 displaySize,
+        nvrhi::TextureHandle motionVectors,
+        nvrhi::TextureHandle depth);
+
+    static bool TagDLSSBuffers(
         nvrhi::CommandListHandle commandList,
         dm::uint2 renderSize,
         dm::uint2 displaySize,
@@ -117,7 +144,7 @@ public:
         nvrhi::TextureHandle outputColor
     );
 
-    bool TagDLSSRRBuffers(
+    static bool TagDLSSRRBuffers(
         nvrhi::CommandListHandle commandList,
         dm::uint2 renderSize,
         dm::uint2 displaySize,
@@ -131,10 +158,41 @@ public:
         nvrhi::TextureHandle outputColor
     );
 
-    bool SetDLSSOptions(const sl::DLSSOptions& options);
-    bool SetDLSSRROptions(const sl::DLSSDOptions& options);
+    static bool SetDLSSOptions(const sl::DLSSOptions& options);
+    static bool SetDLSSRROptions(const sl::DLSSDOptions& options);
+    static void SetDLSSGOptions(const sl::DLSSGOptions& consts);
+    static void QueryDLSSGState(uint64_t& estimatedVRamUsage, int& fps_multiplier, sl::DLSSGStatus& status, int& minSize, int& framesMax, void*& pFence, uint64_t& fenceValue);
+    static uint64_t GetDLSSGLastFenceValue();
+    static void QueueGPUWaitOnSyncObjectSet(nvrhi::IDevice* pDevice, nvrhi::CommandQueue cmdQType, void* syncObj, uint64_t syncObjVal);
+    static void CleanupDLSSG();
+    static bool Get_DLSSG_SwapChainRecreation(bool& isTurnOn);
+    static void Set_DLSSG_SwapChainRecreation(bool on)
+    {
+        m_dlssgTriggerswapchainRecreation = true;
+        m_dlssgShoudLoad = on;
+    }
+    static void Quiet_DLSSG_SwapChainRecreation() { m_dlssgTriggerswapchainRecreation = false; }
 
-    bool EvaluateDLSS(nvrhi::CommandListHandle commandList);
-    bool EvaluateDLSSRR(nvrhi::CommandListHandle commandList);
+    static void SetReflexConsts(const sl::ReflexOptions& reflexOptions);
+    static void QueryReflexStats(bool& reflex_lowLatencyAvailable, bool& reflex_flashAvailable, std::string& stats);
+    static void ReflexCallback_Sleep(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_SimStart(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_SimEnd(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_RenderStart(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_RenderEnd(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_PresentStart(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexCallback_PresentEnd(donut::app::DeviceManager& manager, uint32_t frameID);
+    static void ReflexTriggerFlash();
+    static void ReflexTriggerPcPing();
+    static void SetReflexFlashIndicator(bool enabled) { m_reflexDriverFlashIndicatorEnable = enabled; }
+    static bool GetReflexFlashIndicatorEnable() { return m_reflexDriverFlashIndicatorEnable; }
 
+    static bool EvaluateDLSS(nvrhi::CommandListHandle commandList);
+    static bool EvaluateDLSSRR(nvrhi::CommandListHandle commandList);
+
+    static bool IsDLSSSupported() { return m_dlssAvailable; }
+    static bool IsDLSSRRSupported() { return m_dlssrrAvailable; }
+    static bool IsReflexSupported() { return m_reflexAvailable; }
+    static bool IsPclSupported() { return m_pclAvailable; }
+    static bool IsDLSSGSupported() { return m_dlssgAvailable && IsReflexSupported() && IsPclSupported(); }
 };

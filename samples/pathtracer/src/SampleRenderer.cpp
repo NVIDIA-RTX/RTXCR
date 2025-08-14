@@ -12,6 +12,7 @@
 #include <donut/render/ForwardShadingPass.h>
 #include <donut/render/DrawStrategy.h>
 #include <donut/render/SkyPass.h>
+#include <donut/render/TemporalAntiAliasingPass.h>
 #include <donut/engine/CommonRenderPasses.h>
 #include <donut/engine/FramebufferFactory.h>
 #include <donut/engine/BindingCache.h>
@@ -31,6 +32,8 @@ using namespace donut::engine;
 
 #include "../shared/globalCb.h"
 #include "../shared/lightingCb.h"
+
+#include "Denoiser/NRD/NrdConfig.h"
 
 namespace
 {
@@ -99,7 +102,7 @@ namespace
     }
 }
 
-SampleRenderer::SampleRenderer(DeviceManager* deviceManager, UIData& ui, nvrhi::GraphicsAPI api)
+SampleRenderer::SampleRenderer(DeviceManager* deviceManager, UIData& ui)
     : ApplicationBase(deviceManager)
     , m_ui(ui)
     , m_resourceManager(GetDevice(),
@@ -107,10 +110,15 @@ SampleRenderer::SampleRenderer(DeviceManager* deviceManager, UIData& ui, nvrhi::
                         deviceManager->GetBackBuffer(0)->getDesc().height,
                         deviceManager->GetBackBuffer(0)->getDesc().width,
                         deviceManager->GetBackBuffer(0)->getDesc().height)
-    , m_api(api)
     , m_renderSize(0u)
+    , m_previousDenoiserSelection(ui.denoiserSelection)
+    , m_previousUpscalerSelection(ui.upscalerSelection)
+    , m_previousViewsValid(false)
 {
+    m_commandList = GetDevice()->createCommandList();
 }
+
+SampleRenderer::~SampleRenderer() = default;
 
 bool SampleRenderer::Init(int argc, const char* const* argv)
 {
@@ -146,12 +154,56 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
             m_ui.enableSky = (bool)atoi(argv[n + 1]);
         }
 
+        if (!strcmp(arg, "-enableAnimation"))
+        {
+            m_ui.enableAnimations = (bool)atoi(argv[n + 1]);
+            if (m_ui.enableAnimations)
+            {
+                m_ui.showAnimationUI = true;
+            }
+        }
+
+        if (!strcmp(arg, "-animationKeyframeIndex"))
+        {
+            m_ui.enableAnimationDebugging = true;
+            m_ui.animationKeyFrameIndexOverride = atoi(argv[n + 1]);
+        }
+
+        if (!strcmp(arg, "-animationKeyframeWeight"))
+        {
+            m_ui.enableAnimationDebugging = true;
+            m_ui.animationKeyFrameWeightOverride = (float)atof(argv[n + 1]);
+        }
+
+        if (!strcmp(arg, "-forceLambertianBrdf"))
+        {
+            m_ui.forceLambertianBRDF = (bool)atoi(argv[n + 1]);
+        }
+
         if (!strcmp(arg, "-denoiser"))
+        {
+            const int denoiser = atoi(argv[n + 1]);
+            if (denoiser <= 2)
+            {
+                m_ui.denoiserSelection = (DenoiserSelection) denoiser;
+            }
+        }
+
+        if (!strcmp(arg, "-nrdMode"))
         {
             const int denoiser = atoi(argv[n + 1]);
             if (denoiser <= 1)
             {
-                m_ui.denoiserSelection = (DenoiserSelection) denoiser;
+                m_ui.nrdDenoiserMode = (NrdMode)denoiser;
+            }
+        }
+
+        if (!strcmp(arg, "-enableDlss"))
+        {
+            const bool enableDlss = (bool)atoi(argv[n + 1]);
+            if (enableDlss)
+            {
+                m_ui.upscalerSelection = UpscalerSelection::DLSS;
             }
         }
 
@@ -189,22 +241,38 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
         }
     }
 
+    // Fallback to DOTS when LSS is NOT supported
     if ((GetDevice()->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN || !GetDevice()->queryFeatureSupport(nvrhi::Feature::LinearSweptSpheres)) &&
         m_ui.hairTessellationType == TessellationType::LinearSweptSphere)
     {
         m_ui.hairTessellationType = TessellationType::DisjointOrthogonalTriangleStrip;
     }
 
+    // Fallback to NRD and TAA when DLSS is NOT supported
+    if (!SLWrapper::IsDLSSSupported())
+    {
+        if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+        {
+            m_ui.denoiserSelection = DenoiserSelection::Nrd;
+        }
+        if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
+        {
+            m_ui.upscalerSelection = UpscalerSelection::TAA;
+        }
+    }
+
     m_nativeFileSystem = std::make_shared<vfs::NativeFileSystem>();
     const std::filesystem::path frameworkShaderPath = app::GetDirectoryWithExecutable() / "shaders/framework" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
     const std::filesystem::path appShaderPath = app::GetDirectoryWithExecutable() / "shaders/pathtracer" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
     const std::filesystem::path mediaDir = app::GetDirectoryWithExecutable().parent_path() / "assets";
+    const std::filesystem::path nrdShaderPath = app::GetDirectoryWithExecutable() / "shaders/nrd" / app::GetShaderTypeName(GetDevice()->getGraphicsAPI());
 
     m_rootFileSystem = std::make_shared<vfs::RootFileSystem>();
     m_rootFileSystem->mount("/shaders/donut", frameworkShaderPath);
     m_rootFileSystem->mount("/shaders/app", appShaderPath);
     m_rootFileSystem->mount("/native", m_nativeFileSystem);
     m_rootFileSystem->mount("/assets", mediaDir);
+    m_rootFileSystem->mount("/shaders/nrd", nrdShaderPath);
 
     m_shaderFactory = std::make_shared<engine::ShaderFactory>(GetDevice(), m_rootFileSystem, "/shaders");
     m_CommonPasses = std::make_shared<engine::CommonRenderPasses>(GetDevice(), m_shaderFactory);
@@ -239,7 +307,6 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
         m_gbufferPass = std::make_unique<GBufferPass>(GetDevice(), m_shaderFactory, m_scene, m_accelerationStructure, m_ui);
         m_pathTracingPass = std::make_unique<PathTracingPass>(GetDevice(), m_shaderFactory, m_scene, m_accelerationStructure, m_ui);
         m_postProcessingPass = std::make_unique<PostProcessingPass>(GetDevice(), m_shaderFactory);
-        m_morphTargetAnimationPass = std::make_unique<MorphTargetAnimationPass>(GetDevice(), m_shaderFactory);
     }
 
     // Create Environment Map
@@ -253,17 +320,15 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
         m_scene->GetNativeScene()->FinishedLoading(GetFrameIndex());
     }
 
+    // Create Denoiser
+    m_nrdDenoiser = std::make_unique<NrdDenoiser>(GetDevice(), m_shaderFactory, m_resourceManager, m_ui);
+
     {
         m_gbufferPass->CreateGBufferPassPipeline(m_bindlessLayout);
         m_pathTracingPass->CreateRayTracingPipeline(m_bindlessLayout);
         m_postProcessingPass->CreatePostProcessingPipelines();
-        m_morphTargetAnimationPass->CreateMorphTargetAnimationPipeline();
+        m_nrdDenoiser->CreateDenoiserPipelines();
     }
-
-    // Create DLSS-RR Denoiser
-    m_SL = std::make_unique<SLWrapper>(GetDevice()->getGraphicsAPI());
-
-    m_commandList = GetDevice()->createCommandList();
 
     // Create Morph Target Buffers
     // Note: Don't check m_resourceManager.GetMorphTargetCount() here,
@@ -271,6 +336,19 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
     // if (m_resourceManager.GetMorphTargetCount() > 0)
     {
         m_resourceManager.CreateMorphTargetBuffers(m_scene, m_commandList);
+    }
+
+    // Reflex
+    if (SLWrapper::IsDLSSSupported() && SLWrapper::IsReflexSupported())
+    {
+        // Set the callbacks for Reflex
+        GetDeviceManager()->m_callbacks.beforeFrame   = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_Sleep(m, f); };
+        GetDeviceManager()->m_callbacks.beforeAnimate = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_SimStart(m, f); };
+        GetDeviceManager()->m_callbacks.afterAnimate  = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_SimEnd(m, f); };
+        GetDeviceManager()->m_callbacks.beforeRender  = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_RenderStart(m, f); };
+        GetDeviceManager()->m_callbacks.afterRender   = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_RenderEnd(m, f); };
+        GetDeviceManager()->m_callbacks.beforePresent = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_PresentStart(m, f); };
+        GetDeviceManager()->m_callbacks.afterPresent  = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_PresentEnd(m, f); };
     }
 
     return true;
@@ -298,14 +376,17 @@ void SampleRenderer::SceneUnloading()
     // Force the buffers to be re-created, as well as the bindings
     BackBufferResizing();
 
-    m_morphTargetAnimationPass->ResetAnimation();
+    if (m_resourceManager.GetMorphTargetCount() > 0)
+    {
+        m_morphTargetAnimationPass->ResetAnimation();
+    }
 }
 
 void SampleRenderer::SceneLoaded()
 {
     ApplicationBase::SceneLoaded();
 
-    m_scene->FinishLoading(GetFrameIndex());
+    m_scene->FinishLoading(GetDevice(), m_descriptorTable.get(), GetFrameIndex());
 
     m_pathTracingPass->ResetAccumulation();
 
@@ -315,6 +396,21 @@ void SampleRenderer::SceneLoaded()
     if (m_commandList)
     {
         m_resourceManager.RecreateMorphTargetBuffers(m_scene, m_commandList);
+    }
+
+    if (m_resourceManager.GetMorphTargetCount() > 0)
+    {
+        if (!m_morphTargetAnimationPass)
+        {
+            m_morphTargetAnimationPass = std::make_unique<MorphTargetAnimationPass>(GetDevice(), m_shaderFactory);
+        }
+
+        m_morphTargetAnimationPass->CreateMorphTargetAnimationPipeline(m_scene->GetCurveTessellationType());
+    }
+    else
+    {
+        m_morphTargetAnimationPass = nullptr;
+        m_resourceManager.CleanMorphTargetTextures();
     }
 }
 
@@ -347,12 +443,10 @@ bool SampleRenderer::SetCurrentEnvironmentMapAndLoading(const std::string& envMa
 void SampleRenderer::Animate(float fElapsedTimeSeconds)
 {
     bool isRebuildAsAfterAnimation = false;
-    if (m_scene->Animate(fElapsedTimeSeconds, IsSceneLoaded(), GetFrameIndex(), m_ui.lockCamera, &isRebuildAsAfterAnimation))
+    if (m_scene->Animate(GetDevice(), m_descriptorTable.get(), fElapsedTimeSeconds, IsSceneLoaded(), GetFrameIndex(), m_ui.lockCamera, &isRebuildAsAfterAnimation))
     {
         if (m_resourceManager.GetMorphTargetCount() > 0)
         {
-            m_accelerationStructure->ClearTLAS();
-
             if (!isRebuildAsAfterAnimation)
             {
                 m_accelerationStructure->SetUpdateAS(true);
@@ -379,9 +473,22 @@ void SampleRenderer::Animate(float fElapsedTimeSeconds)
     if (m_ui.recompileShader)
     {
         m_pathTracingPass->ResetAccumulation();
+        m_nrdDenoiser->ResetDenoiser();
+
+        m_previousViewsValid = false;
     }
 
-    GetDeviceManager()->SetInformativeWindowTitle(g_WindowTitle);
+    const double frameTime = GetDeviceManager()->GetAverageFrameTimeSeconds() / (double)std::max(m_ui.dlfgNumFramesActuallyPresented, 1);
+    std::string frameRate;
+    if (frameTime > 0.0)
+    {
+        double const fps = 1.0 / frameTime;
+        int const precision = (fps <= 20.0) ? 1 : 0;
+        std::ostringstream fpsOss;
+        fpsOss << std::fixed << std::setprecision(1) << fps;
+        frameRate = std::string(" - ") + fpsOss.str() + " FPS ";
+    }
+    GetDeviceManager()->SetInformativeWindowTitle(g_WindowTitle, false, frameRate.c_str());
 }
 
 void SampleRenderer::updateView(const uint viewportWidth, const uint viewportHeight, const bool updatePreviousView)
@@ -439,22 +546,29 @@ void SampleRenderer::updateConstantBuffers()
     GlobalConstants globalConstants = {};
     if (m_ui.enableRandom)
     {
-        if (m_ui.jitterMode == JitterMode::None)
+        if (m_ui.denoiserSelection == DenoiserSelection::DlssRr || m_ui.upscalerSelection != UpscalerSelection::TAA)
         {
-            globalConstants.jitterOffset = float2(0.0f, 0.0f);
-        }
-        else if (m_ui.jitterMode == JitterMode::Halton)
-        {
-            globalConstants.jitterOffset = Halton2D(GetFrameIndex());
-        }
-        else if (m_ui.jitterMode == JitterMode::Halton_DLSS)
-        {
-            globalConstants.jitterOffset = getCurrentPixelOffset(GetFrameIndex());
+            if (m_ui.jitterMode == JitterMode::None)
+            {
+                globalConstants.jitterOffset = float2(0.0f, 0.0f);
+            }
+            else if (m_ui.jitterMode == JitterMode::Halton)
+            {
+                globalConstants.jitterOffset = Halton2D(GetFrameIndex());
+            }
+            else if (m_ui.jitterMode == JitterMode::Halton_DLSS)
+            {
+                globalConstants.jitterOffset = getCurrentPixelOffset(GetFrameIndex());
+            }
+            else
+            {
+                // The random mode needs to be calculated in the shader
+                globalConstants.jitterOffset = float2(0.0f, 0.0f);
+            }
         }
         else
         {
-            // The random mode needs to be calculated in the shader
-            globalConstants.jitterOffset = float2(0.0f, 0.0f);
+            globalConstants.jitterOffset = m_taaPass->GetCurrentPixelOffset();
         }
     }
     else
@@ -465,7 +579,7 @@ void SampleRenderer::updateConstantBuffers()
     globalConstants.enableBackFaceCull = m_ui.enableBackFaceCull;
     globalConstants.bouncesMax = m_ui.bouncesMax;
     globalConstants.frameIndex = (m_frameIndex++) * (m_ui.enableRandom ? 1 : 0);
-    globalConstants.enableAccumulation = m_ui.enableAccumulation && m_ui.denoiserSelection != DenoiserSelection::DlssRr;
+    globalConstants.enableAccumulation = m_ui.enableAccumulation && m_ui.denoiserSelection != DenoiserSelection::DlssRr && m_ui.upscalerSelection == UpscalerSelection::None;
     globalConstants.accumulatedFramesMax = m_pathTracingPass->IsAccumulationReset() ? 1 : m_ui.accumulatedFramesMax;
     globalConstants.recipAccumulatedFrames =
         m_ui.enableAccumulation ? (1.0f / static_cast<float>(m_pathTracingPass->GetAccumulationFrameCount())) : 1.0f;
@@ -481,11 +595,16 @@ void SampleRenderer::updateConstantBuffers()
     globalConstants.enableRussianRoulette = m_ui.enableRussianRoulette;
     globalConstants.samplesPerPixel = m_ui.samplesPerPixel;
     globalConstants.exposureScale = donut::math::exp2f(m_ui.exposureAdjustment);
-
     globalConstants.clamp = (uint)m_ui.toneMappingClamp;
     globalConstants.toneMappingOperator = (uint)m_ui.toneMappingOperator;
 
     globalConstants.enableDenoiser = enableDenoiser;
+    if (globalConstants.enableDenoiser)
+    {
+        nrd::HitDistanceParameters hitDistanceParameters;
+        globalConstants.nrdHitDistanceParams = (float4&)hitDistanceParameters;
+    }
+    globalConstants.enableDlssRR = (m_ui.denoiserSelection == DenoiserSelection::DlssRr) ? 1 : 0;
 
     //////////////////////////////////////////////////////////////////////////////////////
     // Hair
@@ -605,32 +724,39 @@ void SampleRenderer::updateConstantBuffers()
     //////////////////////////////////////////////////////////////////////////////////////
 
     // Sky
-    donut::render::SkyParameters skyParams = {};
-    skyParams.brightness = 1.0f;
-    skyParams.horizonColor = constants.skyColor;
-    donut::render::SkyPass::FillShaderParameters(*m_scene->GetSunlight(), skyParams, globalConstants.skyParams);
-    globalConstants.skyParams.angularSizeOfLight = 0.02f;
-    globalConstants.skyParams.glowSize = 0.02f;
-    globalConstants.skyParams.skyColor = constants.skyColor;
-    if (!m_ui.enableSky)
     {
-        globalConstants.skyParams.groundColor = float3(0.0f, 0.0f, 0.0f);
+        donut::render::SkyParameters skyParams = {};
+        skyParams.brightness = 1.0f;
+        skyParams.horizonColor = constants.skyColor;
+        donut::render::SkyPass::FillShaderParameters(*m_scene->GetSunlight(), skyParams, globalConstants.skyParams);
+        globalConstants.skyParams.angularSizeOfLight = 0.02f;
+        globalConstants.skyParams.glowSize = 0.02f;
+        globalConstants.skyParams.skyColor = constants.skyColor;
+        if (!m_ui.enableSky)
+        {
+            globalConstants.skyParams.groundColor = float3(0.0f, 0.0f, 0.0f);
+        }
+        else if (m_ui.skyType == SkyType::Constant)
+        {
+            globalConstants.skyParams.groundColor = constants.skyColor;
+        }
+        else if (m_ui.skyType == SkyType::Environment_Map)
+        {
+            // Use the angularSizeOfLight in Donut struct to mark env map
+            globalConstants.skyParams.angularSizeOfLight = -1.0f;
+        }
     }
-    else if (m_ui.skyType == SkyType::Constant)
-    {
-        globalConstants.skyParams.groundColor = constants.skyColor;
-    }
-    else if (m_ui.skyType == SkyType::Environment_Map)
-    {
-        // Use the angularSizeOfLight in Donut struct to mark env map
-        globalConstants.skyParams.angularSizeOfLight = -1.0f;
-    }
+
+    // Animation
+    globalConstants.enableAnimation = m_ui.enableAnimations;
 
     globalConstants.targetLight = m_ui.targetLight;
     globalConstants.debugOutputMode = m_ui.debugOutput;
     globalConstants.debugScale = m_ui.debugScale;
     globalConstants.debugMin = m_ui.debugMinMax[0];
     globalConstants.debugMax = m_ui.debugMinMax[1];
+
+    globalConstants.enableDenoiserValidationLayer = m_ui.nrdCommonSettings.enableValidation;
 
     m_commandList->writeBuffer(renderTargets.globalArgs, &globalConstants, sizeof(globalConstants));
 }
@@ -645,6 +771,10 @@ void SampleRenderer::BackBufferResizing()
     m_accelerationStructure->SetRebuildAS(true);
 
     m_pathTracingPass->ResetAccumulation();
+
+    m_nrdDenoiser->ResetDenoiser();
+
+    m_previousViewsValid = false;
 }
 
 void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
@@ -658,9 +788,18 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
 
     auto isDlssRrDirty = [&]() -> bool
     {
-        return m_dlssRrOptions.mode != m_ui.dlssQualityMode
+        return m_dlssRrOptions.mode != m_ui.dlssrrQualityMode
             || m_dlssRrOptions.outputWidth != displaySize.x
-            || m_dlssRrOptions.outputHeight != displaySize.y;
+            || m_dlssRrOptions.outputHeight != displaySize.y
+            || isDenoiserSelectionDirty();
+    };
+
+    auto isDlssSrDirty = [&]() -> bool
+    {
+        return m_dlssSrOptions.mode != m_ui.dlsssrQualityMode
+            || m_dlssSrOptions.outputWidth != displaySize.x
+            || m_dlssSrOptions.outputHeight != displaySize.y
+            || isDenoiserSelectionDirty();
     };
 
     auto createDlssConstants = [&](bool isDepthInverted) -> sl::Constants
@@ -671,7 +810,7 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
         dm::float4x4 projection = dm::perspProjD3DStyleReverse(sceneCamera->verticalFov, aspectRatio, sceneCamera->zNear);
 
         const bool isRecreateRenderTargets = displaySize.x != m_resourceManager.GetResolutionWidth() || displaySize.y != m_resourceManager.GetResolutionHeight();
-        bool needNewPasses = isRecreateRenderTargets || !renderTargets.pathTracerOutputTexture || m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS();
+        bool needNewPasses = isRecreateRenderTargets || !renderTargets.pathTracerOutputTexture || m_accelerationStructure->IsRebuildAS();
 
         dm::affine3 viewReprojection = m_view.GetInverseViewMatrix() * m_viewPrevious.GetViewMatrix();
         dm::float4x4 reprojectionMatrix = m_view.GetInverseProjectionMatrix(false) * affineToHomogeneous(viewReprojection) * m_viewPrevious.GetProjectionMatrix(false);
@@ -701,40 +840,192 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
         return consts;
     };
 
-    if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+    if (isDlssEnabled())
     {
-        if (isDlssRrDirty())
+        if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
         {
-            m_dlssRrOptions.mode = m_ui.dlssQualityMode;
-            m_dlssRrOptions.outputWidth = displaySize.x;
-            m_dlssRrOptions.outputHeight = displaySize.y;
-            m_dlssRrOptions.colorBuffersHDR = sl::Boolean::eTrue;
-            m_dlssRrOptions.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+            if (isDlssRrDirty())
+            {
+                m_dlssRrOptions.mode = m_ui.dlssrrQualityMode;
+                m_dlssRrOptions.outputWidth = displaySize.x;
+                m_dlssRrOptions.outputHeight = displaySize.y;
+                m_dlssRrOptions.colorBuffersHDR = sl::Boolean::eTrue;
+                m_dlssRrOptions.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
 
-            sl::DLSSDOptimalSettings dlssRrOptimalSettings;
-            m_SL->GetDLSSRRSettings(m_dlssRrOptions, dlssRrOptimalSettings);
+                sl::DLSSDOptimalSettings dlssRrOptimalSettings;
+                SLWrapper::GetDLSSRRSettings(m_dlssRrOptions, dlssRrOptimalSettings);
 
-            m_dlssRrOptions.sharpness = dlssRrOptimalSettings.optimalSharpness;
+                m_dlssRrOptions.sharpness = dlssRrOptimalSettings.optimalSharpness;
 
-            m_renderSize = dm::uint2(dlssRrOptimalSettings.optimalRenderWidth, dlssRrOptimalSettings.optimalRenderHeight);
+                m_renderSize = dm::uint2(dlssRrOptimalSettings.optimalRenderWidth, dlssRrOptimalSettings.optimalRenderHeight);
+            }
+
+            updateView(m_renderSize.x, m_renderSize.y, true);
+
+            sl::Constants dlssConstants = createDlssConstants(false);
+            SLWrapper::SetConstants(dlssConstants);
+
+            // DLSS-RR needs additional camera matrices when specular hit distance is provided
+            dm::float4x4 worldToView = dm::affineToHomogeneous(m_scene->GetCamera().GetWorldToViewMatrix());
+            m_dlssRrOptions.worldToCameraView = SLWrapper::ToFloat4x4(worldToView);
+            m_dlssRrOptions.cameraViewToWorld = SLWrapper::ToFloat4x4(inverse(worldToView));
+
+            SLWrapper::SetDLSSRROptions(m_dlssRrOptions);
         }
+        else if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
+        {
+            if (isDlssSrDirty())
+            {
+                m_dlssSrOptions.mode = m_ui.dlsssrQualityMode;
+                m_dlssSrOptions.outputWidth = displaySize.x;
+                m_dlssSrOptions.outputHeight = displaySize.y;
+                m_dlssSrOptions.colorBuffersHDR = sl::Boolean::eTrue;
+                m_dlssSrOptions.useAutoExposure = sl::Boolean::eTrue;
 
-        updateView(m_renderSize.x, m_renderSize.y, true);
+                sl::DLSSOptimalSettings dlssSrOptimalSettings;
+                SLWrapper::GetDLSSSettings(m_dlssSrOptions, dlssSrOptimalSettings);
 
-        sl::Constants dlssConstants = createDlssConstants(false);
-        m_SL->SetConstants(dlssConstants);
+                m_dlssSrOptions.sharpness = dlssSrOptimalSettings.optimalSharpness;
 
-        // DLSS-RR needs additional camera matrices when specular hit distance is provided
-        dm::float4x4 worldToView = dm::affineToHomogeneous(m_scene->GetCamera().GetWorldToViewMatrix());
-        m_dlssRrOptions.worldToCameraView = SLWrapper::ToFloat4x4(worldToView);
-        m_dlssRrOptions.cameraViewToWorld = SLWrapper::ToFloat4x4(inverse(worldToView));
+                m_renderSize = dm::uint2(dlssSrOptimalSettings.optimalRenderWidth, dlssSrOptimalSettings.optimalRenderHeight);
+            }
 
-        m_SL->SetDLSSRROptions(m_dlssRrOptions);
+            updateView(m_renderSize.x, m_renderSize.y, true);
+
+            sl::Constants dlssConstants = createDlssConstants(false);
+            SLWrapper::SetConstants(dlssConstants);
+
+            SLWrapper::SetDLSSOptions(m_dlssSrOptions);
+        }
+        else
+        {
+            m_renderSize = displaySize;
+            updateView(m_renderSize.x, m_renderSize.y, true);
+        }
     }
     else
     {
+        if (m_ui.upscalerSelection == UpscalerSelection::TAA && m_taaPass)
+        {
+            m_taaPass->SetJitter(m_temporalAntiAliasingJitter);
+        }
         m_renderSize = displaySize;
         updateView(m_renderSize.x, m_renderSize.y, true);
+    }
+
+    if (SLWrapper::IsDLSSSupported() &&
+        m_ui.enableDlfg &&
+        m_ui.denoiserSelection != DenoiserSelection::DlssRr &&
+        m_ui.upscalerSelection != UpscalerSelection::DLSS)
+    {
+        sl::Constants dlssConstants = createDlssConstants(false);
+        SLWrapper::SetConstants(dlssConstants);
+    }
+
+    // REFLEX
+    if (SLWrapper::IsDLSSSupported() && SLWrapper::IsReflexSupported())
+    {
+        auto reflexConst = sl::ReflexOptions{};
+        reflexConst.mode = m_ui.reflexMode;
+        reflexConst.useMarkersToOptimize = true;
+        reflexConst.virtualKey = VK_F13;
+        reflexConst.frameLimitUs = 0;
+        SLWrapper::SetReflexConsts(reflexConst);
+    }
+
+    // DLSS-G/FG
+    if (SLWrapper::IsDLSSGSupported())
+    {
+        bool prevDlssgWanted = false;
+        SLWrapper::Get_DLSSG_SwapChainRecreation(prevDlssgWanted);
+
+        m_ui.dlfgNumFramesActuallyPresented = 1;
+
+        if (prevDlssgWanted != m_ui.enableDlfg)
+        {
+            SLWrapper::Set_DLSSG_SwapChainRecreation(m_ui.enableDlfg);
+        }
+
+        int minSize = 0;
+        uint64_t estimatedVramUsage = 0;
+        sl::DLSSGStatus status = sl::DLSSGStatus::eOk;
+        void* pDLSSGInputsProcessingFence{};
+        uint64_t lastPresentDLSSGInputsProcessingFenceValue{};
+        auto lastDLSSGFenceValue = SLWrapper::GetDLSSGLastFenceValue();
+        if (m_ui.enableDlfg)
+        {
+            SLWrapper::QueryDLSSGState(
+                estimatedVramUsage,
+                m_ui.dlfgNumFramesActuallyPresented,
+                status,
+                minSize,
+                m_ui.dlfgMaxNumFramesToGenerate,
+                pDLSSGInputsProcessingFence,
+                lastPresentDLSSGInputsProcessingFenceValue);
+        }
+
+        sl::DLSSGOptions dlssgOptions = {};
+        if (!m_ui.enableDlfg ||
+            static_cast<int>(framebuffer->getFramebufferInfo().width) < minSize ||
+            static_cast<int>(framebuffer->getFramebufferInfo().height) < minSize)
+        {
+            if (m_ui.enableDlfg)
+            {
+                donut::log::info("Swapchain is too small. DLSSG is disabled.");
+            }
+            dlssgOptions.mode = sl::DLSSGMode::eOff;
+        }
+        else
+        {
+            dlssgOptions.mode = sl::DLSSGMode::eOn;
+            // Explicitly manage DLSS-G resources in order to prevent stutter when temporarily disabled.
+            dlssgOptions.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
+        }
+        dlssgOptions.numFramesToGenerate = std::min(m_ui.dlfgNumFramesToGenerate - 1, m_ui.dlfgMaxNumFramesToGenerate);
+        SLWrapper::SetDLSSGOptions(dlssgOptions);
+
+        if (m_ui.enableDlfg)
+        {
+            const auto fenceValue = lastPresentDLSSGInputsProcessingFenceValue;
+            SLWrapper::QueryDLSSGState(
+                estimatedVramUsage,
+                m_ui.dlfgNumFramesActuallyPresented,
+                status,
+                minSize,
+                m_ui.dlfgMaxNumFramesToGenerate,
+                pDLSSGInputsProcessingFence,
+                lastPresentDLSSGInputsProcessingFenceValue);
+            assert(fenceValue == lastPresentDLSSGInputsProcessingFenceValue);
+
+            if (pDLSSGInputsProcessingFence != nullptr)
+            {
+                const bool dlssgEnabledLastFrame = (m_dlssgOptions.mode != sl::DLSSGMode::eOff);
+                if (dlssgEnabledLastFrame)
+                {
+                    if (lastPresentDLSSGInputsProcessingFenceValue == 0 || lastPresentDLSSGInputsProcessingFenceValue > lastDLSSGFenceValue)
+                    {
+                        // This wait is redundant until SL DLSS FG allows SMSCG but done for now for demonstration purposes.
+                        // It needs to be queued before any of the inputs are modified in the subsequent command list submission.
+                        SLWrapper::QueueGPUWaitOnSyncObjectSet(GetDevice(), nvrhi::CommandQueue::Graphics, pDLSSGInputsProcessingFence, lastPresentDLSSGInputsProcessingFenceValue);
+                    }
+                }
+                else
+                {
+                    if (lastPresentDLSSGInputsProcessingFenceValue < lastDLSSGFenceValue)
+                    {
+                        assert(false);
+                        log::warning("Inputs synchronization fence value retrieved from DLSSGState object out of order: \
+                         current frame: %ld, last frame: %ld ", lastPresentDLSSGInputsProcessingFenceValue, lastDLSSGFenceValue);
+                    }
+                    else if (lastPresentDLSSGInputsProcessingFenceValue != 0)
+                    {
+                        log::info("DLSSG was inactive in the last presenting frame!");
+                    }
+                }
+            }
+        }
+
+        m_dlssgOptions = dlssgOptions;
     }
 
     if (m_renderSize.x != m_resourceManager.GetRenderWidth() ||
@@ -746,74 +1037,120 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
     m_commandList->open();
 
     const bool isRecreateRenderTargets = displaySize.x != m_resourceManager.GetResolutionWidth() ||
-                                         displaySize.y != m_resourceManager.GetResolutionHeight();
+                                         displaySize.y != m_resourceManager.GetResolutionHeight() ||
+                                         !renderTargets.pathTracerOutputTexture;
     const bool isRecreateRenderResolutionTextures = m_renderSize.x != m_resourceManager.GetRenderWidth() ||
                                                     m_renderSize.y != m_resourceManager.GetRenderHeight();
-    if (isRecreateRenderTargets ||
-        !renderTargets.pathTracerOutputTexture ||
-        m_accelerationStructure->IsRebuildAS() ||
-        m_accelerationStructure->IsUpdateAS() ||
-        m_ui.recompileShader)
+
+    if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS() || m_ui.recompileShader)
     {
-        if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS() || m_ui.recompileShader)
+        if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS())
         {
-            GetDevice()->waitForIdle();
-
-            if (m_accelerationStructure->IsRebuildAS() || m_accelerationStructure->IsUpdateAS())
+            if (m_accelerationStructure->IsRebuildAS())
             {
-                for (const auto& mesh : m_scene->GetNativeScene()->GetSceneGraph()->GetMeshes())
-                {
-                    m_commandList->beginTrackingBufferState(mesh->buffers->vertexBuffer, nvrhi::ResourceStates::AccelStructBuildInput);
-                }
-                m_accelerationStructure->CreateAccelerationStructures(m_commandList, GetFrameIndex());
+                GetDevice()->waitForIdle();
             }
 
-            if (m_ui.recompileShader)
+            for (const auto& mesh : m_scene->GetNativeScene()->GetSceneGraph()->GetMeshes())
             {
-                // Compile the shaders
-                system("cmake --build ..\\..\\..\\build --target pathtracer_shaders");
-
-                // Clear Shader Cache
-                m_shaderFactory->ClearCache();
-
-                // Recompile shaders for PathTracing Passes
-                m_gbufferPass->RecreateGBufferPassPipeline(m_bindlessLayout);
-                m_pathTracingPass->ResetAccumulation();
-                m_pathTracingPass->RecreateRayTracingPipeline(m_bindlessLayout);
-
-                // NOTE: Do we need to do anything for DLSS if recompile shaders?
-
-                // Recompile shaders for Postprocessing Passes
-                m_postProcessingPass->RecompilePostProcessingShaders();
-
-                // Recompile shaders for Morph Target Passes
-                if (m_resourceManager.GetMorphTargetCount() > 0)
-                {
-                    m_morphTargetAnimationPass->RecompileMorphTargetAnimationShaders();
-                }
-
-                // Flip the flag back
-                m_ui.recompileShader = false;
+                m_commandList->beginTrackingBufferState(mesh->buffers->vertexBuffer, nvrhi::ResourceStates::AccelStructBuildInput);
             }
+            m_accelerationStructure->CreateAccelerationStructures(m_commandList, GetFrameIndex());
+
+            m_accelerationStructure->BuildTLAS(m_commandList);
         }
 
-        if (isRecreateRenderTargets || !renderTargets.pathTracerOutputTexture)
+        if (m_ui.recompileShader)
         {
-            m_resourceManager.RecreateScreenResolutionTextures(displaySize.x, displaySize.y);
-            m_resourceManager.RecreateRenderResolutionTextures(m_renderSize.x, m_renderSize.y);
-        }
+            // Compile the shaders
+            system("cmake --build ..\\..\\..\\build --target pathtracer_shaders --target nrd_shaders");
 
-        m_accelerationStructure->BuildTLAS(m_commandList);
+            // Clear Shader Cache
+            m_shaderFactory->ClearCache();
+
+            // Recompile shaders for PathTracing Passes
+            m_gbufferPass->RecreateGBufferPassPipeline(m_bindlessLayout);
+            m_pathTracingPass->ResetAccumulation();
+            m_pathTracingPass->RecreateRayTracingPipeline(m_bindlessLayout);
+
+            // Recompile Denoiser
+            m_nrdDenoiser->RecreateDenoiserPipelines();
+
+            // NOTE: Do we need to do anything for DLSS if recompile shaders?
+
+            // Recompile shaders for Postprocessing Passes
+            m_postProcessingPass->RecompilePostProcessingShaders();
+
+            // Recompile shaders for Morph Target Passes
+            if (m_resourceManager.GetMorphTargetCount() > 0)
+            {
+                m_morphTargetAnimationPass->RecompileMorphTargetAnimationShaders();
+            }
+
+            // Flip the flag back
+            m_ui.recompileShader = false;
+        }
+    }
+
+    if (isRecreateRenderTargets)
+    {
+        m_resourceManager.RecreateScreenResolutionTextures(displaySize.x, displaySize.y);
+        m_resourceManager.RecreateRenderResolutionTextures(m_renderSize.x, m_renderSize.y);
     }
     else if (isRecreateRenderResolutionTextures)
     {
         m_resourceManager.RecreateRenderResolutionTextures(m_renderSize.x, m_renderSize.y);
     }
 
+    // Check if we need to recreate NRD resources or release NRD resources
+    if (m_ui.denoiserSelection == DenoiserSelection::Nrd)
+    {
+        if (isDenoiserSelectionDirty() || isRecreateRenderTargets)
+        {
+            m_nrdDenoiser->RecreateNrdTextures(m_renderSize);
+        }
+    }
+    else
+    {
+        if (isDenoiserSelectionDirty() && m_previousDenoiserSelection == DenoiserSelection::Nrd)
+        {
+            m_nrdDenoiser->CleanDenoiserTextures();
+        }
+    }
+
+    if (m_ui.upscalerSelection == UpscalerSelection::TAA)
+    {
+        if (!m_taaPass || isRecreateRenderTargets)
+        {
+            // Recreate TAA Pass
+            const auto& renderTargets = m_resourceManager.GetPathTracerResources();
+            const auto& gBufferResources = renderTargets.gBufferResources;
+
+            donut::render::TemporalAntiAliasingPass::CreateParameters taaParams{};
+            taaParams.sourceDepth = gBufferResources.deviceZTexture;
+            taaParams.motionVectors = gBufferResources.motionVectorTexture;
+            taaParams.unresolvedColor = renderTargets.pathTracerOutputTexture;
+            taaParams.resolvedColor = renderTargets.pathTracerOutputTextureDlssOutput;
+            taaParams.feedback1 = m_resourceManager.GetTaaResources().taaFeedback1;
+            taaParams.feedback2 = m_resourceManager.GetTaaResources().taaFeedback2;
+            taaParams.useCatmullRomFilter = true;
+
+            m_taaPass = std::make_unique<donut::render::TemporalAntiAliasingPass>(GetDevice(), m_shaderFactory, m_CommonPasses, m_view, taaParams);
+            m_taaPass->SetJitter(donut::render::TemporalAntiAliasingJitter::Halton);
+        }
+    }
+    else
+    {
+        if (isUpscalerSelectionDirty() && m_previousUpscalerSelection == UpscalerSelection::TAA)
+        {
+            m_taaPass = nullptr;
+        }
+    }
+
     {
         m_commandList->clearTextureFloat(renderTargets.pathTracerOutputTexture, nvrhi::AllSubresources, nvrhi::Color(0.0f));
         m_commandList->clearTextureFloat(renderTargets.postProcessingTexture, nvrhi::AllSubresources, nvrhi::Color(0.0f));
-        if ( m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+        if (m_ui.upscalerSelection != UpscalerSelection::None || m_ui.denoiserSelection == DenoiserSelection::DlssRr)
         {
             m_commandList->clearTextureFloat(renderTargets.pathTracerOutputTextureDlssOutput, nvrhi::AllSubresources, nvrhi::Color(0.0f));
         }
@@ -848,38 +1185,54 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
                 std::max(1.0f / m_ui.animationFps, 0.001f),
                 m_ui.enableAnimationDebugging,
                 m_ui.animationKeyFrameIndexOverride,
-                m_ui.animationKeyFrameWeightOverride);
+                m_ui.animationKeyFrameWeightOverride,
+                m_ui.enableAnimationSmoothing ? m_ui.animationSmoothingFactor : 1.0f);
 
             ++morphTargetResourcesIndex;
         }
     }
 
     m_gbufferPass->Dispatch(m_commandList,
-                            renderTargets,
+                            renderTargets, m_resourceManager.GetDenoiserResources(),
                             m_CommonPasses->m_AnisotropicWrapSampler,
                             m_descriptorTable,
                             m_renderSize,
                             m_resourceManager.IsEnvMapUpdated());
 
     m_pathTracingPass->Dispatch(m_commandList,
-                                renderTargets,
+                                renderTargets, m_resourceManager.GetDenoiserResources(),
                                 m_CommonPasses->m_AnisotropicWrapSampler,
                                 m_descriptorTable,
                                 m_renderSize,
                                 m_resourceManager.IsEnvMapUpdated());
     m_resourceManager.FinishUpdatingEnvMap();
 
+    // General Tagging
+    if (SLWrapper::IsDLSSSupported())
+    {
+        const auto& gBufferResources = renderTargets.gBufferResources;
+        SLWrapper::TagDLSSGeneralBuffers(
+            m_commandList,
+            m_renderSize,
+            displaySize,
+            gBufferResources.screenSpaceMotionVectorTexture,
+            gBufferResources.viewZTexture);
+    }
+
     const bool enableDebugging = (m_ui.debugOutput != RtxcrDebugOutputType::None &&
                                   m_ui.debugOutput != RtxcrDebugOutputType::WhiteFurnace);
     if (!enableDebugging)
     {
-        updateView(displaySize.x, displaySize.y, false);
         if (m_ui.enableDenoiser && m_ui.debugOutput != RtxcrDebugOutputType::WhiteFurnace)
         {
-            if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+            if (m_ui.denoiserSelection == DenoiserSelection::Nrd)
+            {
+                m_nrdDenoiser->Dispatch(m_commandList, m_renderSize, m_view, m_viewPrevious, GetFrameIndex());
+            }
+            else if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
             {
                 const auto& gBufferResources = renderTargets.gBufferResources;
-                m_SL->TagDLSSRRBuffers(
+                SLWrapper::TagDLSSRRBuffers(
                     m_commandList,
                     m_renderSize,
                     displaySize,
@@ -892,7 +1245,7 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
                     GetDevice()->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN ? nullptr : gBufferResources.specularHitDistanceTexture,
                     renderTargets.pathTracerOutputTextureDlssOutput
                 );
-                m_SL->EvaluateDLSSRR(m_commandList);
+                SLWrapper::EvaluateDLSSRR(m_commandList);
 
                 m_commandList->close();
                 GetDevice()->executeCommandList(m_commandList);
@@ -907,11 +1260,55 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
         // DLSS Upscaling
         if (m_ui.denoiserSelection != DenoiserSelection::DlssRr)
         {
-            const nvrhi::TextureSlice textureSlice = {};
-            m_commandList->copyTexture(renderTargets.postProcessingTexture, textureSlice, renderTargets.pathTracerOutputTexture, textureSlice);
+            if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
+            {
+                const auto& gBufferResources = renderTargets.gBufferResources;
+                SLWrapper::TagDLSSBuffers(m_commandList,
+                    m_renderSize,
+                    displaySize,
+                    renderTargets.pathTracerOutputTexture,
+                    gBufferResources.screenSpaceMotionVectorTexture,
+                    gBufferResources.deviceZTexture,
+                    false,
+                    nullptr,
+                    renderTargets.pathTracerOutputTextureDlssOutput);
+
+                SLWrapper::EvaluateDLSS(m_commandList);
+
+                m_commandList->close();
+                GetDevice()->executeCommandList(m_commandList);
+
+                m_commandList->open();
+                const nvrhi::TextureSlice textureSlice = {};
+                m_commandList->copyTexture(renderTargets.postProcessingTexture, textureSlice, renderTargets.pathTracerOutputTextureDlssOutput, textureSlice);
+                updateConstantBuffers();
+            }
+            else if (m_ui.upscalerSelection == UpscalerSelection::TAA)
+            {
+                const auto taaInputView = m_view;
+                updateView(displaySize.x, displaySize.y, false);
+
+                m_taaPass->TemporalResolve(
+                    m_commandList, m_temporalAntiAliasingParams, m_previousViewsValid, taaInputView, m_previousViewsValid ? m_viewPrevious : m_view);
+
+                m_commandList->close();
+                GetDevice()->executeCommandList(m_commandList);
+
+                m_commandList->open();
+                const nvrhi::TextureSlice textureSlice = {};
+                m_commandList->copyTexture(renderTargets.postProcessingTexture, textureSlice, renderTargets.pathTracerOutputTextureDlssOutput, textureSlice);
+                updateConstantBuffers();
+            }
+            else
+            {
+                const nvrhi::TextureSlice textureSlice = {};
+                m_commandList->copyTexture(renderTargets.postProcessingTexture, textureSlice, renderTargets.pathTracerOutputTexture, textureSlice);
+            }
         }
 
-        m_postProcessingPass->Dispatch(m_commandList, renderTargets, m_CommonPasses, framebuffer, m_view);
+        updateView(displaySize.x, displaySize.y, false);
+        m_postProcessingPass->Dispatch(
+            m_commandList, renderTargets, m_resourceManager.GetDenoiserResources().validationTexture, m_CommonPasses, framebuffer, m_view);
     }
     else // Debugging
     {
@@ -920,21 +1317,39 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
 
     m_commandList->close();
     GetDevice()->executeCommandList(m_commandList);
-    GetDevice()->waitForIdle();
 
-    if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+    if (SLWrapper::IsDLSSSupported() &&
+        (m_ui.denoiserSelection == DenoiserSelection::DlssRr || m_ui.upscalerSelection == UpscalerSelection::DLSS || m_ui.enableDlfg))
     {
-        m_SL->AdvanceFrame();
+        SLWrapper::AdvanceFrame();
     }
 
+    if (m_ui.upscalerSelection == UpscalerSelection::TAA)
+    {
+        m_taaPass->AdvanceFrame();
+        m_previousViewsValid = true;
+    }
+    else
+    {
+        m_previousViewsValid = false;
+    }
+
+    // Update Flags
     m_accelerationStructure->SetRebuildAS(false);
     m_accelerationStructure->SetUpdateAS(false);
+    m_previousDenoiserSelection = m_ui.denoiserSelection;
+    m_previousUpscalerSelection = m_ui.upscalerSelection;
+
+    // Swap Dynamic Vertex Buffer
+    if (m_ui.enableAnimations && m_resourceManager.GetMorphTargetCount() > 0)
+    {
+        m_scene->GetCurveTessellation()->swapDynamicVertexBuffer();
+    }
 
     if (m_ui.captureScreenshot)
     {
         const ResourceManager::DebuggingResources& debuggingResources = m_resourceManager.GetDebuggingResources();
-        const std::filesystem::path screenshotPath = app::GetDirectoryWithExecutable() / "screenshots/";
-        std::string screenshotFileStr = screenshotPath.string();
+        std::string screenshotFileStr = "../../../bin/screenshots/";
         if (!strstr(m_ui.screenshotName, ".png"))
         {
             screenshotFileStr += std::string(m_ui.screenshotName) + ".png";

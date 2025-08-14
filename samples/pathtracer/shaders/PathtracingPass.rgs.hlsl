@@ -106,6 +106,7 @@ struct AccumulatedSampleData
 void accumulateSample(inout AccumulatedSampleData accumulatedSampleData,
                       const float3 sampleRadiance,
                       const bool isDiffusePath,
+                      const bool isSssPath,
                       const float hitDistance)
 {
     if (isDiffusePath)
@@ -114,6 +115,11 @@ void accumulateSample(inout AccumulatedSampleData accumulatedSampleData,
         accumulatedSampleData.hitDistance = hitDistance;
 
         ++accumulatedSampleData.diffuseSampleNum;
+
+        if (isSssPath)
+        {
+            accumulatedSampleData.specularHitDistance = hitDistance;
+        }
     }
     else // Specular
     {
@@ -406,6 +412,7 @@ void RayGen()
     AccumulatedSampleData accumulatedSampleData = (AccumulatedSampleData)0;
     float3 debugColor = float3(0.0f, 0.0f, 0.0f);
 
+    bool isSssPath = false;
     for (uint sampleIndex = 0; sampleIndex < g_Global.samplesPerPixel; sampleIndex++)
     {
         RayDesc ray = generatePinholeCameraRay(g_Lighting.view, pixel / (float2)launchDimensions);
@@ -414,10 +421,10 @@ void RayGen()
         float3 throughput = float3(1.0f, 1.0f, 1.0f);
 
         bool internalRay = false;
-        bool isSssPath = false;
         bool isEyePath = false;
         bool isLensPath = false;
 
+        // Denoiser Vars
         bool isDiffusePath = true;
         float pathHitDistance = 0.0f;
 
@@ -450,6 +457,7 @@ void RayGen()
                                                          payload.IsLss(),
                                                          payload.lssObjectPositionAndRadius0,
                                                          payload.lssObjectPositionAndRadius1,
+                                                         false, // We don't calculate motion vector in PT pass
                                                          t_InstanceData,
                                                          t_GeometryData,
                                                          t_MaterialConstants);
@@ -592,7 +600,7 @@ void RayGen()
 
         if (g_Global.enableDenoiser)
         {
-            accumulateSample(accumulatedSampleData, exitantRadiance, isDiffusePath, pathHitDistance);
+            accumulateSample(accumulatedSampleData, exitantRadiance, isDiffusePath, isSssPath, pathHitDistance);
         }
         else
         {
@@ -603,6 +611,10 @@ void RayGen()
                 if (isDiffusePath)
                 {
                     accumulatedSampleData.hitDistance = pathHitDistance;
+                    if (isSssPath)
+                    {
+                        accumulatedSampleData.specularHitDistance = pathHitDistance;
+                    }
                 }
                 else
                 {
@@ -616,15 +628,19 @@ void RayGen()
     {
         // Specular
         const uint specularSampleNum = g_Global.samplesPerPixel - accumulatedSampleData.diffuseSampleNum;
-        if (specularSampleNum)
+        if (specularSampleNum > 0)
         {
-            accumulatedSampleData.specularRadiance *= (1.0f / specularSampleNum);
+            accumulatedSampleData.specularRadiance *= (1.0f / (float)specularSampleNum);
         }
         else
         {
-            accumulatedSampleData.specularRadiance = 0;
-            accumulatedSampleData.specularHitDistance = 0;
+            if (!isSssPath)
+            {
+                accumulatedSampleData.specularRadiance = 0;
+                accumulatedSampleData.specularHitDistance = 0;
+            }
         }
+        u_OutputSpecularRadianceHitDistance[pixelIndex] = float4(accumulatedSampleData.specularRadiance, accumulatedSampleData.specularHitDistance);
         u_OutputSpecularHitDistance[pixelIndex] = accumulatedSampleData.specularHitDistance;
 
         // Diffuse
@@ -638,6 +654,8 @@ void RayGen()
             accumulatedSampleData.radiance = 0;
             accumulatedSampleData.hitDistance = 0;
         }
+
+        u_OutputDiffuseRadianceHitDistance[pixelIndex] = float4(accumulatedSampleData.radiance, accumulatedSampleData.hitDistance);
 
         accumulatedSampleData.radiance *= (1.0f / g_Global.samplesPerPixel);
         u_Output[pixelIndex] = float4(accumulatedSampleData.radiance + accumulatedSampleData.specularRadiance, 1.0f);

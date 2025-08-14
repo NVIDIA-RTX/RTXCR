@@ -54,7 +54,7 @@ void MorphTargetAnimationPass::createShaders()
     // TODO: Debug triangles
 }
 
-bool MorphTargetAnimationPass::CreateMorphTargetAnimationPipeline()
+bool MorphTargetAnimationPass::CreateMorphTargetAnimationPipeline(const TessellationType tessellationType)
 {
     nvrhi::BindingLayoutDesc bindingLayoutDesc;
     bindingLayoutDesc.visibility = nvrhi::ShaderType::Compute;
@@ -63,11 +63,16 @@ bool MorphTargetAnimationPass::CreateMorphTargetAnimationPipeline()
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(0),
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(1),
         nvrhi::BindingLayoutItem::StructuredBuffer_SRV(2),
-        nvrhi::BindingLayoutItem::RawBuffer_SRV(3),
         nvrhi::BindingLayoutItem::RawBuffer_UAV(0),
         nvrhi::BindingLayoutItem::RawBuffer_UAV(1),
-        nvrhi::BindingLayoutItem::RawBuffer_UAV(2)
+        nvrhi::BindingLayoutItem::RawBuffer_UAV(2),
     };
+
+    // Index buffer data are cleared in CurveTessellation when using LSS geometry mode, as index buffers are not currently supported for LSS.
+    if (tessellationType != TessellationType::LinearSweptSphere)
+    {
+        bindingLayoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::RawBuffer_SRV(3));
+    }
 
     m_bindingLayout = m_device->createBindingLayout(bindingLayoutDesc);
 
@@ -96,7 +101,8 @@ void MorphTargetAnimationPass::Dispatch(
     const float animationTimestampPerFrame,
     const bool enableDebugOverride,
     const uint32_t overrideKeyFrameIndex,
-    const float overrideKeyFrameWeight)
+    const float overrideKeyFrameWeight,
+    const float animationSmoothingFactor)
 {
     if (morphTargetResources.vertexSize == 0)
     {
@@ -119,29 +125,54 @@ void MorphTargetAnimationPass::Dispatch(
     const auto& tangentBufferRange = mesh->buffers->getVertexBufferRange(VertexAttribute::Tangent);
 
     // Calculate morph target buffers that are needed for interpolation
-    const int32_t morphTargetSize = mesh->buffers->morphTargetBufferRange.size();
-    const float totalAnimationTime = morphTargetSize * animationTimestampPerFrame;
+    const uint32_t morphTargetSize = mesh->buffers->morphTargetBufferRange.size();
+    const float totalAnimationTime = (morphTargetSize - 1) * animationTimestampPerFrame;
+    const float adjustedTotalAnimationTime = totalAnimationTime + animationSmoothingFactor * animationTimestampPerFrame;
     m_totalTime *= m_prevAnimationTimestampPerFrame != 0.0f ?
         (animationTimestampPerFrame / m_prevAnimationTimestampPerFrame) : 1.0f;
-    while (m_totalTime > totalAnimationTime)
+    while (m_totalTime > adjustedTotalAnimationTime)
     {
-        m_totalTime -= totalAnimationTime;
+        m_totalTime -= adjustedTotalAnimationTime;
     }
 
-    const uint32_t keyFrameIndex = !enableDebugOverride ?
-        static_cast<uint32_t>(m_totalTime / animationTimestampPerFrame) :
-        overrideKeyFrameIndex % morphTargetSize;
+    uint32_t keyFrameIndex = 0;
+    if (!enableDebugOverride)
+    {
+        if (m_totalTime < totalAnimationTime)
+        {
+            keyFrameIndex = static_cast<uint32_t>(m_totalTime / animationTimestampPerFrame);
+        }
+        else
+        {
+            keyFrameIndex = morphTargetSize - 1;
+        }
+    }
+    else
+    {
+        keyFrameIndex = overrideKeyFrameIndex % morphTargetSize;
+    }
 
     // All morph target buffer data are packed into a single buffer 'morphTargetDataBuffer', so we don't need to upload data every frame.
     // Instead, we calculate the 2 keyframes we need, and use buffer range to bind to the animation shader.
     const auto& morphTargetBufferKeyframeRange = mesh->buffers->morphTargetBufferRange[keyFrameIndex];
     const auto& morphTargetBufferNextKeyframeRange = mesh->buffers->morphTargetBufferRange[(keyFrameIndex + 1) % morphTargetSize];
 
+    // Slow down last frame to avoid flickering
+    float adjustedAnimationTimestampPerFrame = animationTimestampPerFrame;
+    if ((keyFrameIndex + 1) % morphTargetSize == 0)
+    {
+        adjustedAnimationTimestampPerFrame *= animationSmoothingFactor;
+    }
+    else
+    {
+        adjustedAnimationTimestampPerFrame *= 1;
+    }
+
     // Update CB
     MorphTargetConstants morphTargetConstants = {};
     morphTargetConstants.vertexCount = morphTargetResources.vertexSize;
     morphTargetConstants.lerpWeight = !enableDebugOverride ?
-        saturate((m_totalTime - keyFrameIndex * animationTimestampPerFrame) / animationTimestampPerFrame) :
+        saturate((m_totalTime - keyFrameIndex * animationTimestampPerFrame) / adjustedAnimationTimestampPerFrame) :
         saturate(overrideKeyFrameWeight);
 
     if (morphTargetConstants.lerpWeight < 0.0f || morphTargetConstants.lerpWeight > 1.0f)
@@ -164,11 +195,15 @@ void MorphTargetAnimationPass::Dispatch(
         nvrhi::BindingSetItem::StructuredBuffer_SRV(0, morphTargetResources.morphTargetDataBuffer, nvrhi::Format::UNKNOWN, morphTargetBufferKeyframeRange),
         nvrhi::BindingSetItem::StructuredBuffer_SRV(1, morphTargetResources.morphTargetDataBuffer, nvrhi::Format::UNKNOWN, morphTargetBufferNextKeyframeRange),
         nvrhi::BindingSetItem::StructuredBuffer_SRV(2, morphTargetResources.lineSegmentsBuffer),
-        nvrhi::BindingSetItem::RawBuffer_SRV(3, mesh->buffers->indexBuffer),
         nvrhi::BindingSetItem::RawBuffer_UAV(0, mesh->buffers->vertexBuffer, positionBufferRange),
         nvrhi::BindingSetItem::RawBuffer_UAV(1, mesh->buffers->vertexBuffer, normalBufferRange),
-        nvrhi::BindingSetItem::RawBuffer_UAV(2, mesh->buffers->vertexBuffer, tangentBufferRange)
+        nvrhi::BindingSetItem::RawBuffer_UAV(2, mesh->buffers->vertexBuffer, tangentBufferRange),
     };
+    // Index buffer data are cleared in CurveTessellation when using LSS geometry mode, as index buffers are not currently supported for LSS.
+    if (tessellationType != TessellationType::LinearSweptSphere)
+    {
+        bindingSetDesc.bindings.push_back(nvrhi::BindingSetItem::RawBuffer_SRV(3, mesh->buffers->indexBuffer));
+    }
 
     m_bindingSet = m_device->createBindingSet(bindingSetDesc, m_bindingLayout);
 
@@ -180,8 +215,8 @@ void MorphTargetAnimationPass::Dispatch(
     commandList->dispatch((morphTargetResources.vertexSize - 1) / 32 + 1);
 
     m_prevAnimationTimestampPerFrame = animationTimestampPerFrame;
-    while (m_totalTime > totalAnimationTime)
+    while (m_totalTime > adjustedTotalAnimationTime)
     {
-        m_totalTime -= totalAnimationTime;
+        m_totalTime -= adjustedTotalAnimationTime;
     }
 }

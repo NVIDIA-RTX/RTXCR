@@ -1,7 +1,8 @@
 bin/
 !external/streamline/bin
-build*/
 external/dxc/
+external/nrd.cfg
+build*/
 assets/
 .vs
 .vscode
