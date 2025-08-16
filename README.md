@@ -30,7 +30,7 @@ For more details of running sample, check [RTX Character Rendering User Guide].
 ## Getting up and running
 
 ### Prerequisites
-RTX 20 series or newer. Radeon RX 7000 Series or newer. Intel Arc Series. **|** Driver ≥ 580.88 **|** [CMake] v3.30.0 **|** [Git LFS] **|** [Vulkan SDK] 1.4.313.2 **|** Windows SDK ≥ 10.0.20348.0 (ShaderMake requirement)
+RTX 20 series or newer. Radeon RX 7000 Series or newer. Intel Arc Series. **|** Driver ≥ 580.88 **|** [CMake] v3.30.0 **|** [Git LFS] **|** [Vulkan SDK] 1.4.313.2 **|** Windows SDK ≥ 10.0.22621.0
 
 ### Building and Running the Sample Apps
 
