@@ -92,6 +92,12 @@ Animation is not enabled by default. To run the animation, you can either:
 - Add the following to **Command Arguments**:
   `-enableAnimation 1 -scene claire.animation.scene.json`
 
+## Performance
+
+LSS reduces memory usage by up to **38%** and improves frame rate by **30%** compared to traditional PolyTube geometry.
+
+See detailed profiling data and analysis in the [LSS (Linear Swept Spheres) Performance Analysis].
+
 ## Contact
 
 RTXCR is actively being developed. Please report any issues directly through the GitHub issue tracker. For any information or suggestions, contact us at rtxcr-sdk-support@nvidia.com
@@ -125,6 +131,7 @@ Computer Graphics Forum 35 (2), 275-283 | [Paper Link](https://benedikt-bitterli
 [LSS Technical Blog]: https://developer.nvidia.com/blog/render-path-traced-hair-in-real-time-with-nvidia-geforce-rtx-50-series-gpus/
 [RTX Character Rendering SSS Guide]: docs/RtxcrSssGuide.md
 [RTX Character Rendering User Guide]: docs/RtxcrUserGuide.md
+[LSS (Linear Swept Spheres) Performance Analysis]: docs/RtxcrLssPerf.md
 [Chiang15]: https://benedikt-bitterli.me/pchfm/
 [Burley15]: https://graphics.pixar.com/library/ApproxBSSRDF/paper.pdf
 [CMake]: https://cmake.org/download/
