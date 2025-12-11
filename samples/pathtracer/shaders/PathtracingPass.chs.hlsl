@@ -28,22 +28,16 @@ void ClosestHit(inout RayPayload payload : SV_RayPayload, in Attributes attrib :
     payload.primitiveIndex = PrimitiveIndex();
     payload.geometryIndex = GeometryIndex();
     payload.barycentrics = attrib.uv;
-
-    uint packedDistance = asuint(payload.hitDistance) & (~0x1u);
+    payload.objectRayDirection = ObjectRayDirection();
 
 #if LSS_GEOMETRY_SUPPORTED == 1
     if (NvRtIsLssHit())
     {
-        packedDistance |= 0x1;
-
         const float2x4 lssObjectPositionsAndRadii = NvRtLssObjectPositionsAndRadii();
         payload.lssObjectPositionAndRadius0 = lssObjectPositionsAndRadii[0];
         payload.lssObjectPositionAndRadius1 = lssObjectPositionsAndRadii[1];
     }
 #endif
-
-    payload.hitDistance = asfloat(packedDistance);
-    payload.objectRayDirection = ObjectRayDirection();
 }
 
 [shader("closesthit")]

@@ -223,7 +223,6 @@ GeometrySample getGeometryFromHit(
     const float3 objectRayOrigin,
     const float hitDistance,
     const float3 objectRayDirection,
-    const bool isLss,
     const float4 lssObjectPositionAndRadius0,
     const float4 lssObjectPositionAndRadius1,
     const bool isMorphTarget,
@@ -238,15 +237,15 @@ GeometrySample getGeometryFromHit(
 
     const uint vertexBufferIndex = gs.geometry.vertexBufferIndex + (uint)isMorphTarget * (g_Global.frameIndex % 2);
 
+    ByteAddressBuffer indexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.indexBufferIndex)];
+    ByteAddressBuffer vertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(vertexBufferIndex)];
+    ByteAddressBuffer prevVertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.vertexBufferIndex + ((g_Global.frameIndex + 1) % 2))];
+
     gs.curveObjectSpacePosition = 0.0f;
     gs.curveObjectSpacePositionPrev = 0.0f;
 
-    if (!isLss)
+    if (!gs.instance.IsCurveLSS())
     {
-        ByteAddressBuffer indexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.indexBufferIndex)];
-        ByteAddressBuffer vertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(vertexBufferIndex)];
-        ByteAddressBuffer prevVertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(gs.geometry.vertexBufferIndex + ((g_Global.frameIndex + 1) % 2))];
-
         gs = getGeometryFromHitFastSss(
             gs,
             indexBuffer,
@@ -262,11 +261,22 @@ GeometrySample getGeometryFromHit(
     }
     else
     {
-        float u = rayBarycentrics.x;
-
+#if API_DX12 == 1
         const float3 p0 = lssObjectPositionAndRadius0.xyz;
         const float3 p1 = lssObjectPositionAndRadius1.xyz;
-        float3 p = lerp(p0, p1, u);
+
+        const float r0 = lssObjectPositionAndRadius0.w;
+        const float r1 = lssObjectPositionAndRadius1.w;
+#else
+        const uint2 indices = uint2(primitiveIndex * 2, primitiveIndex * 2 + 1);
+        const float3 p0 = asfloat(vertexBuffer.Load3(gs.geometry.positionOffset + indices.x * c_SizeOfPosition));
+        const float3 p1 = asfloat(vertexBuffer.Load3(gs.geometry.positionOffset + indices.y * c_SizeOfPosition));
+
+        const float r0 = asfloat(vertexBuffer.Load(gs.geometry.curveRadiusOffset + indices.x * c_SizeOfCurveRadius));
+        const float r1 = asfloat(vertexBuffer.Load(gs.geometry.curveRadiusOffset + indices.y * c_SizeOfCurveRadius));
+#endif
+        const float u = rayBarycentrics.x;
+        const float3 p = lerp(p0, p1, u);
 
         gs.objectSpacePosition = objectRayOrigin + hitDistance * objectRayDirection;
 
@@ -280,8 +290,6 @@ GeometrySample getGeometryFromHit(
         // TODO: Confirm this is correct
         gs.tangent.w = 0.0f;
 
-        const float r0 = lssObjectPositionAndRadius0.w;
-        const float r1 = lssObjectPositionAndRadius1.w;
         gs.curveRadius = lerp(r0, r1, u);
 
         // Previous Frame Vertex Position

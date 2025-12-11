@@ -454,7 +454,6 @@ void RayGen()
                                                          ray.Origin,
                                                          payload.HitT(),
                                                          payload.objectRayDirection,
-                                                         payload.IsLss(),
                                                          payload.lssObjectPositionAndRadius0,
                                                          payload.lssObjectPositionAndRadius1,
                                                          false, // We don't calculate motion vector in PT pass
@@ -501,7 +500,7 @@ void RayGen()
                 float3 radiance = float3(0.0f, 0.0f, 0.0f);
                 if (!isSssPath)
                 {
-                    if (!isSssMat || isHairMat || isEyesCorneaMaterial(geometry.material) || payload.IsLss())
+                    if (!isSssMat || isHairMat || isEyesCorneaMaterial(geometry.material) || geometry.instance.IsCurveLSS())
                     {
                         radiance = evalulateNEE(material, hairMaterialData, geometry, viewVector, hitPos, rngState);
                     }

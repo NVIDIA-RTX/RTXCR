@@ -59,7 +59,7 @@ function(CheckAndDownloadPackage NAME VERSION LOCAL_PATH URL)
     endif()
 endfunction()
 
-CheckAndDownloadPackage("DXC" "v1.7.2308" ${CMAKE_CURRENT_SOURCE_DIR}/external/dxc https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.7.2308/dxc_2023_08_14.zip)
+CheckAndDownloadPackage("DXC" "v1.8.2505.1" ${CMAKE_CURRENT_SOURCE_DIR}/external/dxc https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505.1/dxc_2025_07_14.zip)
 
 # -----------------------------------------------------------------------------
 # Streamline

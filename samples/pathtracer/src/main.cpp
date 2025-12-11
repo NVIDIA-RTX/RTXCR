@@ -36,11 +36,15 @@ void vulkanDeviceFeatureInfoCallback(VkDeviceCreateInfo& info)
     info.pNext = &deviceFeatures;
 }
 
-void ParseCommandLine(int argc, const char* const* argv, donut::app::DeviceCreationParameters& deviceParams)
+void ParseCommandLine(
+    const int argc, const char* const* argv, const nvrhi::GraphicsAPI api,
+    donut::app::DeviceCreationParameters& deviceParams)
 {
     // Default resolution
     deviceParams.backBufferWidth = 1920;
     deviceParams.backBufferHeight = 1080;
+
+    bool addVulkanLssSupport = (api == nvrhi::GraphicsAPI::VULKAN);
 
     for (int n = 1; n < __argc; n++)
     {
@@ -69,7 +73,24 @@ void ParseCommandLine(int argc, const char* const* argv, donut::app::DeviceCreat
             deviceParams.backBufferWidth = 1920;
             deviceParams.backBufferHeight = 1080;
         }
+#if USE_VK
+        else if (api == nvrhi::GraphicsAPI::VULKAN && !strcmp(arg, "-hairTessellationType"))
+        {
+            const TessellationType tessellationType = (TessellationType)atoi(argv[n + 1]);
+            if (tessellationType != TessellationType::LinearSweptSphere)
+            {
+                addVulkanLssSupport = false;
+            }
+        }
+#endif
     }
+
+#if USE_VK
+    if (addVulkanLssSupport)
+    {
+        deviceParams.optionalVulkanDeviceExtensions.push_back(VK_NV_RAY_TRACING_LINEAR_SWEPT_SPHERES_EXTENSION_NAME);
+    }
+#endif
 }
 
 #ifdef WIN32
@@ -102,7 +123,7 @@ int main(int __argc, const char** __argv)
     deviceParams.allowModeSwitch = false;
 #endif
 
-    ParseCommandLine(__argc, __argv, deviceParams);
+    ParseCommandLine(__argc, __argv, api, deviceParams);
 
     // Initialize Streamline
     const std::vector<sl::Feature> slFeaturesToLoad = {

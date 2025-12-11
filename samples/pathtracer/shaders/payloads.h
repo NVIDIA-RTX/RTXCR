@@ -29,11 +29,6 @@ struct RayPayload
         return hitDistance > 0.0f;
     }
 
-    bool IsLss()
-    {
-        return asuint(hitDistance) & 0x1;
-    }
-
     float HitT()
     {
         return hitDistance;

@@ -241,8 +241,7 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
         }
     }
 
-    // Fallback to DOTS when LSS is NOT supported
-    if ((GetDevice()->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN || !GetDevice()->queryFeatureSupport(nvrhi::Feature::LinearSweptSpheres)) &&
+    if (!GetDevice()->queryFeatureSupport(nvrhi::Feature::LinearSweptSpheres) &&
         m_ui.hairTessellationType == TessellationType::LinearSweptSphere)
     {
         m_ui.hairTessellationType = TessellationType::DisjointOrthogonalTriangleStrip;

@@ -175,7 +175,6 @@ void RayGen()
                                                      ray.Origin,
                                                      payload.HitT(),
                                                      payload.objectRayDirection,
-                                                     payload.IsLss(),
                                                      payload.lssObjectPositionAndRadius0,
                                                      payload.lssObjectPositionAndRadius1,
                                                      isMorphTarget,

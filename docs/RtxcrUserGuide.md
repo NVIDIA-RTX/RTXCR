@@ -132,7 +132,7 @@ To use the GUI parameters, tick "Enable Hair Material Override".
 - `-hairColorMode`: Select hair color mode: color(0) or physics(1).
 - `-enableHairOverride`: Enable hair override from the GUI.
 - `-hairRadiusScale`: Scale factor for hair radius.
-- `-hairTessellationType`: Select hair geometry tessellation: Polytube(0), DOTS(1), or LSS(2). Currently only LSS is supported in DirectX12.
+- `-hairTessellationType`: Select hair geometry tessellation: Polytube(0), DOTS(1), or LSS(2).
 
 ### Animation
 - `-enableAnimation`: Enable morph target animation.
