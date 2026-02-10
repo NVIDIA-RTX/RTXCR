@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -1241,7 +1241,7 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
                     gBufferResources.albedoTexture,
                     gBufferResources.specularAlbedoTexture,
                     gBufferResources.shadingNormalRoughnessTexture,
-                    GetDevice()->getGraphicsAPI() == nvrhi::GraphicsAPI::VULKAN ? nullptr : gBufferResources.specularHitDistanceTexture,
+                    gBufferResources.specularHitDistanceTexture,
                     renderTargets.pathTracerOutputTextureDlssOutput
                 );
                 SLWrapper::EvaluateDLSSRR(m_commandList);

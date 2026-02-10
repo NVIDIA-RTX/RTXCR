@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -106,7 +106,6 @@ struct AccumulatedSampleData
 void accumulateSample(inout AccumulatedSampleData accumulatedSampleData,
                       const float3 sampleRadiance,
                       const bool isDiffusePath,
-                      const bool isSssPath,
                       const float hitDistance)
 {
     if (isDiffusePath)
@@ -115,11 +114,6 @@ void accumulateSample(inout AccumulatedSampleData accumulatedSampleData,
         accumulatedSampleData.hitDistance = hitDistance;
 
         ++accumulatedSampleData.diffuseSampleNum;
-
-        if (isSssPath)
-        {
-            accumulatedSampleData.specularHitDistance = hitDistance;
-        }
     }
     else // Specular
     {
@@ -439,12 +433,15 @@ void RayGen()
             {
                 resolveMiss(ray, pixelIndex, bounce, throughput, directRadiance, indirectRadiance, debugColor);
 
-                pathHitDistance = (bounce == 0) ? TRACING_FAR_DISTANCE : pathHitDistance;
+                pathHitDistance += TRACING_FAR_DISTANCE;
 
                 break;
             }
 
-            pathHitDistance += payload.hitDistance;
+            if (bounce == 1)
+            {
+                pathHitDistance += payload.hitDistance;
+            }
 
             GeometrySample geometry = getGeometryFromHit(payload.instanceID,
                                                          payload.primitiveIndex,
@@ -511,6 +508,9 @@ void RayGen()
                         ByteAddressBuffer indexBuffer = t_BindlessBuffers[NonUniformResourceIndex(geometry.geometry.indexBufferIndex)];
                         ByteAddressBuffer vertexBuffer = t_BindlessBuffers[NonUniformResourceIndex(geometry.geometry.vertexBufferIndex)];
 
+                        // Replace diffuse with SSS color
+                        material.diffuseAlbedo = material.subsurfaceParams.transmissionColor;
+
                         radiance = evaluateSubsurfaceNEE(
                             material,
                             geometry,
@@ -548,7 +548,7 @@ void RayGen()
             }
 
             // Terminate loop early on last bounce (we don't need to sample BRDF)
-            if (bounce == g_Global.bouncesMax - 1 || (isSssPath && !isEyePath && (g_Global.enableSssIndirect == false || bounce > 2)))
+            if (bounce == g_Global.bouncesMax - 1)
             {
                 break;
             }
@@ -578,7 +578,7 @@ void RayGen()
                                                rngState, isDiffusePathLocal, internalRay, throughput, ray);
             if (bounce == 0)
             {
-                isDiffusePath = isDiffusePathLocal || isSssPath;
+                isDiffusePath = isDiffusePathLocal;
             }
 
             if (!continueTrace)
@@ -599,7 +599,7 @@ void RayGen()
 
         if (g_Global.enableDenoiser)
         {
-            accumulateSample(accumulatedSampleData, exitantRadiance, isDiffusePath, isSssPath, pathHitDistance);
+            accumulateSample(accumulatedSampleData, exitantRadiance, isDiffusePath, pathHitDistance);
         }
         else
         {
@@ -610,10 +610,6 @@ void RayGen()
                 if (isDiffusePath)
                 {
                     accumulatedSampleData.hitDistance = pathHitDistance;
-                    if (isSssPath)
-                    {
-                        accumulatedSampleData.specularHitDistance = pathHitDistance;
-                    }
                 }
                 else
                 {
@@ -630,14 +626,6 @@ void RayGen()
         if (specularSampleNum > 0)
         {
             accumulatedSampleData.specularRadiance *= (1.0f / (float)specularSampleNum);
-        }
-        else
-        {
-            if (!isSssPath)
-            {
-                accumulatedSampleData.specularRadiance = 0;
-                accumulatedSampleData.specularHitDistance = 0;
-            }
         }
         u_OutputSpecularRadianceHitDistance[pixelIndex] = float4(accumulatedSampleData.specularRadiance, accumulatedSampleData.specularHitDistance);
         u_OutputSpecularHitDistance[pixelIndex] = accumulatedSampleData.specularHitDistance;

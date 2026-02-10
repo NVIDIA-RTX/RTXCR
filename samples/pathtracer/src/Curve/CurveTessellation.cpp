@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -8,53 +8,13 @@
  * license agreement from NVIDIA CORPORATION is strictly prohibited.
  */
 
-#include "CurveTessellation.h"
+#include <donut/core/math/math.h>
+
 #include "shared.h"
+#include "CurveTessellation.h"
 #include "../Ui/PathtracerUi.h"
 
 #include <nvrhi/common/misc.h>
-
-namespace
-{
-    // Generate a vector that is orthogonal to the input vector
-    // This can be used to invent a tangent frame for meshes that don't have real tangents/bitangents.
-    inline float3 perpStark(const float3& u)
-    {
-        float3 a = abs(u);
-        uint32_t uyx = (a.x - a.y) < 0 ? 1 : 0;
-        uint32_t uzx = (a.x - a.z) < 0 ? 1 : 0;
-        uint32_t uzy = (a.y - a.z) < 0 ? 1 : 0;
-        uint32_t xm = uyx & uzx;
-        uint32_t ym = (1 ^ xm) & uzy;
-        uint32_t zm = 1 ^ (xm | ym); // 1 ^ (xm & ym)
-        float3 v = normalize(cross(u, float3(xm, ym, zm)));
-        return v;
-    }
-
-    // Build a local frame from a unit normal vector.
-    inline void buildFrame(const float3& n, float3& t, float3& b)
-    {
-        t = perpStark(n);
-        b = cross(n, t);
-    }
-
-    inline float3 getUnitCircleCoords(float3 xAxis, float3 yAxis, float angleRadians)
-    {
-        // We only care about angles < 2PI
-        float unused = 0.f;
-        float unitCircleFraction = std::modf(angleRadians / TWO_PI, &unused);
-
-        if (unitCircleFraction < 0.f)
-        {
-            unitCircleFraction = 1.0f - unitCircleFraction;
-        }
-
-        float adjustedAngleRadians = unitCircleFraction * TWO_PI;
-
-        return std::cos(adjustedAngleRadians) * xAxis + std::sin(adjustedAngleRadians) * yAxis;
-    }
-} // namespace
-
 
 CurveTessellation::CurveTessellation(const std::vector<std::shared_ptr<MeshInstance>>& meshInstances, const UIData& ui)
 : m_curveOriginalGeometryInfoCache(meshInstances.size())
@@ -120,76 +80,16 @@ void CurveTessellation::convertToTrianglePolyTubes(const std::vector<std::shared
                 geometry->vertexOffsetInMesh = vertexOffsetInMesh;
                 geometry->globalGeometryIndex = geometryIndex;
 
-                for (uint32_t index = 0; index < indexSize; ++index)
-                {
-                    const auto& line = lineSegments[globalIndex];
-
-                    // Build the initial frame
-                    float3 fwd, s, t;
-                    fwd = normalize(float3(line.vertices[1].position) - float3(line.vertices[0].position));
-                    buildFrame(fwd, s, t);
-
-                    for (uint32_t face = 0; face < RTXCR_CURVE_POLYTUBE_ORDER; ++face)
-                    {
-                        const uint32_t baseIndex = globalIndex * numVerticesPerSegment + face * 6;
-                        const uint32_t baseGeometryIndex = index * numVerticesPerSegment + face * 6;
-
-                        meshBuffers->indexData[baseIndex] = baseGeometryIndex;
-                        meshBuffers->indexData[baseIndex + 1] = baseGeometryIndex + 1;
-                        meshBuffers->indexData[baseIndex + 2] = baseGeometryIndex + 2;
-                        meshBuffers->indexData[baseIndex + 3] = baseGeometryIndex + 3;
-                        meshBuffers->indexData[baseIndex + 4] = baseGeometryIndex + 4;
-                        meshBuffers->indexData[baseIndex + 5] = baseGeometryIndex + 5;
-
-                        float angleRadians1 = TWO_PI * face / RTXCR_CURVE_POLYTUBE_ORDER;
-                        float angleRadians2 = TWO_PI * (face + 1.0f) / RTXCR_CURVE_POLYTUBE_ORDER;
-
-                        float3 v1 = getUnitCircleCoords(s, t, angleRadians1);
-                        float3 v2 = getUnitCircleCoords(s, t, angleRadians2);
-
-                        // Necessary to make up for lost volume of PolyTube approximation of a circular tube
-                        const float polyTubesVolumeCompensationScale = 1.0f / (std::sin(PI / RTXCR_CURVE_POLYTUBE_ORDER) / (PI / RTXCR_CURVE_POLYTUBE_ORDER));
-                        meshBuffers->positionData[baseIndex] = float3(line.vertices[0].position) + v1 * line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 1] = float3(line.vertices[1].position) + v2 * line.vertices[1].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 2] = float3(line.vertices[1].position) + v1 * line.vertices[1].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 3] = float3(line.vertices[0].position) + v1 * line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 4] = float3(line.vertices[0].position) + v2 * line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 5] = float3(line.vertices[1].position) + v2 * line.vertices[1].radius * polyTubesVolumeCompensationScale;
-
-                        uint n1 = vectorToSnorm8(v1);
-                        uint n2 = vectorToSnorm8(v2);
-                        meshBuffers->normalData[baseIndex] = n1;
-                        meshBuffers->normalData[baseIndex + 1] = n2;
-                        meshBuffers->normalData[baseIndex + 2] = n1;
-                        meshBuffers->normalData[baseIndex + 3] = n1;
-                        meshBuffers->normalData[baseIndex + 4] = n2;
-                        meshBuffers->normalData[baseIndex + 5] = n2;
-
-                        uint tangent = vectorToSnorm8(fwd);
-                        meshBuffers->tangentData[baseIndex] = tangent;
-                        meshBuffers->tangentData[baseIndex + 1] = tangent;
-                        meshBuffers->tangentData[baseIndex + 2] = tangent;
-                        meshBuffers->tangentData[baseIndex + 3] = tangent;
-                        meshBuffers->tangentData[baseIndex + 4] = tangent;
-                        meshBuffers->tangentData[baseIndex + 5] = tangent;
-
-                        meshBuffers->texcoord1Data[baseIndex] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 1] = float2(line.vertices[1].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 2] = float2(line.vertices[1].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 3] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 4] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 5] = float2(line.vertices[1].texCoord);
-
-                        meshBuffers->radiusData[baseIndex] = line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 1] = line.vertices[1].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 2] = line.vertices[1].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 3] = line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 4] = line.vertices[0].radius * polyTubesVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 5] = line.vertices[1].radius * polyTubesVolumeCompensationScale;
-                    }
-
-                    ++globalIndex;
-                }
+                globalIndex = rtxcr::geometry::convertToTrianglePolyTubes(
+                    lineSegments,
+                    indexSize,
+                    meshBuffers->indexData.data(),
+                    (float*)(meshBuffers->positionData.data()),
+                    meshBuffers->normalData.data(),
+                    meshBuffers->tangentData.data(),
+                    (float*)meshBuffers->texcoord1Data.data(),
+                    meshBuffers->radiusData.data(),
+                    globalIndex);
 
                 indexOffsetInMesh += geometryNumIndices;
                 vertexOffsetInMesh += geometryNumVertices;
@@ -248,71 +148,16 @@ void CurveTessellation::convertToDisjointOrthogonalTriangleStrips(const std::vec
                 geometry->vertexOffsetInMesh = vertexOffsetInMesh;
                 geometry->globalGeometryIndex = geometryIndex;
 
-                for (uint32_t index = 0; index < indexSize; ++index)
-                {
-                    const auto& line = lineSegments[globalIndex];
-
-                    // Build the initial frame
-                    float3 fwd, s, t;
-                    fwd = normalize(float3(line.vertices[1].position) - float3(line.vertices[0].position));
-                    buildFrame(fwd, s, t);
-
-                    float3 v[2] = { s, t };
-
-                    for (uint32_t face = 0; face < 2; ++face)
-                    {
-                        const uint32_t baseIndex = globalIndex * numVerticesPerSegment + face * 6;
-                        const uint32_t baseGeometryIndex = index * numVerticesPerSegment + face * 6;
-
-                        meshBuffers->indexData[baseIndex] = baseGeometryIndex;
-                        meshBuffers->indexData[baseIndex + 1] = baseGeometryIndex + 1;
-                        meshBuffers->indexData[baseIndex + 2] = baseGeometryIndex + 2;
-                        meshBuffers->indexData[baseIndex + 3] = baseGeometryIndex + 3;
-                        meshBuffers->indexData[baseIndex + 4] = baseGeometryIndex + 4;
-                        meshBuffers->indexData[baseIndex + 5] = baseGeometryIndex + 5;
-
-                        // Necessary to make up for lost volume of PolyTube approximation of a circular tube
-                        const float dotsVolumeCompensationScale = 1.0f / (std::sin(PI / 4.0f) / (PI / 4.0f));
-                        meshBuffers->positionData[baseIndex] = float3(line.vertices[0].position) + v[face] * line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 1] = float3(line.vertices[1].position) - v[face] * line.vertices[1].radius * dotsVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 2] = float3(line.vertices[1].position) + v[face] * line.vertices[1].radius * dotsVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 3] = float3(line.vertices[0].position) + v[face] * line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 4] = float3(line.vertices[0].position) - v[face] * line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->positionData[baseIndex + 5] = float3(line.vertices[1].position) - v[face] * line.vertices[1].radius * dotsVolumeCompensationScale;
-
-                        uint n[2] = { vectorToSnorm8(-v[face]), vectorToSnorm8(v[face]) };
-                        meshBuffers->normalData[baseIndex] = n[1];
-                        meshBuffers->normalData[baseIndex + 1] = n[0];
-                        meshBuffers->normalData[baseIndex + 2] = n[1];
-                        meshBuffers->normalData[baseIndex + 3] = n[1];
-                        meshBuffers->normalData[baseIndex + 4] = n[0];
-                        meshBuffers->normalData[baseIndex + 5] = n[0];
-
-                        uint tangent = vectorToSnorm8(fwd);
-                        meshBuffers->tangentData[baseIndex] = tangent;
-                        meshBuffers->tangentData[baseIndex + 1] = tangent;
-                        meshBuffers->tangentData[baseIndex + 2] = tangent;
-                        meshBuffers->tangentData[baseIndex + 3] = tangent;
-                        meshBuffers->tangentData[baseIndex + 4] = tangent;
-                        meshBuffers->tangentData[baseIndex + 5] = tangent;
-
-                        meshBuffers->texcoord1Data[baseIndex] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 1] = float2(line.vertices[1].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 2] = float2(line.vertices[1].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 3] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 4] = float2(line.vertices[0].texCoord);
-                        meshBuffers->texcoord1Data[baseIndex + 5] = float2(line.vertices[1].texCoord);
-
-                        meshBuffers->radiusData[baseIndex] = line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 1] = line.vertices[1].radius * dotsVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 2] = line.vertices[1].radius * dotsVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 3] = line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 4] = line.vertices[0].radius * dotsVolumeCompensationScale;
-                        meshBuffers->radiusData[baseIndex + 5] = line.vertices[1].radius * dotsVolumeCompensationScale;
-                    }
-
-                    ++globalIndex;
-                }
+                globalIndex = rtxcr::geometry::convertToDisjointOrthogonalTriangleStrips(
+                    lineSegments,
+                    indexSize,
+                    meshBuffers->indexData.data(),
+                    (float*)(meshBuffers->positionData.data()),
+                    meshBuffers->normalData.data(),
+                    meshBuffers->tangentData.data(),
+                    (float*)meshBuffers->texcoord1Data.data(),
+                    meshBuffers->radiusData.data(),
+                    globalIndex);
 
                 indexOffsetInMesh += geometryNumIndices;
                 vertexOffsetInMesh += geometryNumVertices;
@@ -366,14 +211,12 @@ void CurveTessellation::convertToLinearSweptSpheres(const std::vector<std::share
                 geometry->vertexOffsetInMesh = vertexOffsetInMesh;
                 geometry->globalGeometryIndex = geometryIndex;
 
-                for (uint32_t index = 0; index < numLineSegments; ++index)
-                {
-                    meshBuffers->positionData[2 * globalIndex] = float3(lineSegments[globalIndex].vertices[0].position);
-                    meshBuffers->positionData[2 * globalIndex + 1] = float3(lineSegments[globalIndex].vertices[1].position);
-                    meshBuffers->radiusData[2 * globalIndex] = std::max(lineSegments[globalIndex].vertices[0].radius, 0.001f);
-                    meshBuffers->radiusData[2 * globalIndex + 1] = std::max(lineSegments[globalIndex].vertices[1].radius, 0.001f);
-                    ++globalIndex;
-                }
+                globalIndex = rtxcr::geometry::convertToLinearSweptSpheres(
+                    lineSegments,
+                    numLineSegments,
+                    (float*)meshBuffers->positionData.data(),
+                    (float*)meshBuffers->radiusData.data(),
+                    globalIndex);
 
                 vertexOffsetInMesh += geometryNumVertices;
             }
