@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -167,8 +167,12 @@ private:
 
     inline bool isDlssEnabled() const
     {
-        return SLWrapper::IsDLSSSupported() &&
-                (m_ui.denoiserSelection == DenoiserSelection::DlssRr || m_ui.upscalerSelection == UpscalerSelection::DLSS);
+        if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+        {
+            return SLWrapper::IsDLSSSupported() && SLWrapper::IsDLSSRRSupported();
+        }
+
+        return m_ui.upscalerSelection == UpscalerSelection::DLSS && SLWrapper::IsDLSSSupported();
     }
 
     UIData& m_ui;

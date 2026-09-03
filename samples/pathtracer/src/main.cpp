@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -8,7 +8,7 @@
  * license agreement from NVIDIA CORPORATION is strictly prohibited.
  */
 
-#include "../../../donut/nvrhi/src/vulkan/vulkan-backend.h"
+#include "../../../external/donut/nvrhi/src/vulkan/vulkan-backend.h"
 #include <nvrhi/nvrhi.h>
 
 #include "SampleRenderer.h"
@@ -114,13 +114,11 @@ int main(int __argc, const char** __argv)
     donut::app::DeviceCreationParameters deviceParams = {};
     deviceParams.enableRayTracingExtensions = true;
     deviceParams.enablePerMonitorDPI = true;
-    deviceParams.allowModeSwitch = false;
 #ifdef _DEBUG
     // TODO: Enable runtime debugging for Vulkan, currently we find some issues when insert VK_LAYER_KHRONOS_validation
     deviceParams.enableDebugRuntime = (api == nvrhi::GraphicsAPI::D3D12);
     deviceParams.enableNvrhiValidationLayer = (api == nvrhi::GraphicsAPI::D3D12);
     deviceParams.enablePerMonitorDPI = true;
-    deviceParams.allowModeSwitch = false;
 #endif
 
     ParseCommandLine(__argc, __argv, api, deviceParams);

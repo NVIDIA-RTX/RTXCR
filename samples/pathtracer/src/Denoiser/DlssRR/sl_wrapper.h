@@ -98,7 +98,10 @@ private:
 
     static bool m_pclAvailable;
 
-    static sl::Resource NvRHITextureToSL(nvrhi::TextureHandle texture, nvrhi::ResourceStates stateBits);
+    static sl::Resource NvRHITextureToSL(
+        nvrhi::CommandListHandle commandList,
+        nvrhi::TextureHandle texture,
+        nvrhi::ResourceStates stateBits);
     static void* NvRHICommandListToNative(nvrhi::CommandListHandle commandList);
 
     static void setSlFeatureFlags(const sl::Feature feature);

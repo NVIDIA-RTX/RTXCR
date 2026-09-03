@@ -26,6 +26,7 @@
 #include "debug.hlsli"
 
 #define RUSSIAN_ROULETTE_BOUNCES_MIN    3
+#define NRD_VALID_HIT_DISTANCE_MIN       1e-6f
 
 // 1~3 are other material lobes defined in bsdf.hlsli
 #define HAIR_TYPE                       4
@@ -111,14 +112,18 @@ void accumulateSample(inout AccumulatedSampleData accumulatedSampleData,
     if (isDiffusePath)
     {
         accumulatedSampleData.radiance += sampleRadiance;
-        accumulatedSampleData.hitDistance = hitDistance;
+        accumulatedSampleData.hitDistance = g_Global.enableDlssRR
+            ? hitDistance
+            : max(hitDistance, NRD_VALID_HIT_DISTANCE_MIN);
 
         ++accumulatedSampleData.diffuseSampleNum;
     }
     else // Specular
     {
         accumulatedSampleData.specularRadiance += sampleRadiance;
-        accumulatedSampleData.specularHitDistance = hitDistance;
+        accumulatedSampleData.specularHitDistance = g_Global.enableDlssRR
+            ? hitDistance
+            : max(hitDistance, NRD_VALID_HIT_DISTANCE_MIN);
     }
 }
 
@@ -338,10 +343,13 @@ bool indirectIntegrator(const MaterialSample material,
                 }
 
                 const float h = 2.0f * Rand(rngState) - 1.0f;
-                const float lobeRandom = Rand(rngState);
+                const float3 farFieldRand2[2] = {
+                    float3(rand2[0], Rand(rngState)),
+                    float3(rand2[1], 0.0f)
+                };
                 float3 bsdfSpecular = float3(0.0f, 0.0f, 0.0f);
                 float3 bsdfDiffuse = float3(0.0f, 0.0f, 0.0f);
-                continueTrace = RTXCR_SampleFarFieldBcsdf(hairInteractionSurface, hairMaterialInteractionBcsdf, viewVectorLocal, h, lobeRandom, rand2, sampleDirection, bsdfSpecular, bsdfDiffuse, bsdfPdf);
+                continueTrace = RTXCR_SampleFarFieldBcsdf(hairInteractionSurface, hairMaterialInteractionBcsdf, viewVectorLocal, h, farFieldRand2, sampleDirection, bsdfSpecular, bsdfDiffuse, bsdfPdf);
                 bsdfWeight = bsdfSpecular + bsdfDiffuse;
                 break;
             }
@@ -539,8 +547,8 @@ void RayGen()
                                                hairMaterialData,
                                                g_Global.whiteFurnaceSampleCount,
                                                g_Global.hairMode,
-                                               g_Global.diffuseReflectionTint,
-                                               g_Global.diffuseReflectionWeight,
+                                               !g_Global.enableHairMaterialOverride ? material.hairParams.diffuseReflectionTint : g_Global.diffuseReflectionTint,
+                                               !g_Global.enableHairMaterialOverride ? material.hairParams.diffuseReflectionWeight : g_Global.diffuseReflectionWeight,
                                                !g_Global.enableHairMaterialOverride ? hairMaterialData.longitudinalRoughness : g_Global.hairRoughness,
                                                g_Lighting.skyColor.rgb,
                                                material.shadingNormal,

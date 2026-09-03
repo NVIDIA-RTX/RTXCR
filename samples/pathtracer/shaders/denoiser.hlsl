@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION. All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -44,6 +44,7 @@ void demodulate(in uint2 pixel : SV_DispatchThreadID)
     {
         // Demodulate Diffuse Signal
         float4 diffuseData = u_OutputDiffuseHitDistance[pixel];
+        bool hasDiffuseData = diffuseData.w != 0.0f;
         if (any(diffuseData.xyz))
         {
             float3 diffuseAlbedo = u_OutputDiffuseAlbedo[pixel].xyz;
@@ -56,7 +57,9 @@ void demodulate(in uint2 pixel : SV_DispatchThreadID)
         diffuseData = RELAX_FrontEnd_PackRadianceAndHitDist(diffuseData.xyz, diffuseData.w, true);
         u_OutputDiffuseHitDistance[pixel] = diffuseData;
 #else
-        float normalizedHitDistance = REBLUR_FrontEnd_GetNormHitDist(diffuseData.w, viewSpaceZ, g_Global.nrdHitDistanceParams, normalRoughness.w);
+        float normalizedHitDistance = hasDiffuseData
+            ? REBLUR_FrontEnd_GetNormHitDist(diffuseData.w, viewSpaceZ, g_Global.nrdHitDistanceParams.xyz, 1.0f)
+            : 0.0f;
         diffuseData = REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuseData.xyz, normalizedHitDistance, true);
         u_OutputDiffuseHitDistance[pixel] = diffuseData;
 #endif
@@ -66,6 +69,7 @@ void demodulate(in uint2 pixel : SV_DispatchThreadID)
     {
         // Demodulate Specular Signal
         float4 specularData = u_OutputSpecularHitDistance[pixel];
+        bool hasSpecularData = specularData.w != 0.0f;
         if (any(specularData.xyz))
         {
             float3 specularAlbedo = u_OutputSpecularAlbedo[pixel].xyz;
@@ -78,7 +82,9 @@ void demodulate(in uint2 pixel : SV_DispatchThreadID)
         specularData = RELAX_FrontEnd_PackRadianceAndHitDist(specularData.xyz, specularData.w, true);
         u_OutputSpecularHitDistance[pixel] = specularData;
 #else
-        float normalizedHitDistance = REBLUR_FrontEnd_GetNormHitDist(specularData.w, viewSpaceZ, g_Global.nrdHitDistanceParams, normalRoughness.w);
+        float normalizedHitDistance = hasSpecularData
+            ? REBLUR_FrontEnd_GetNormHitDist(specularData.w, viewSpaceZ, g_Global.nrdHitDistanceParams.xyz, normalRoughness.w)
+            : 0.0f;
         specularData = REBLUR_FrontEnd_PackRadianceAndNormHitDist(specularData.xyz, normalizedHitDistance, true);
         u_OutputSpecularHitDistance[pixel] = specularData;
 #endif

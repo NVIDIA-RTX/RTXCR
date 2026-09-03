@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * NVIDIA CORPORATION and its licensors retain all intellectual property
 * and proprietary rights in and to this software, related documentation
@@ -18,7 +18,7 @@ namespace NrdConfig
         settings.enableAntiFirefly = true;
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
 
-        settings.historyFixFrameNum = 4;
+        settings.historyFixFrameNum = 3;
         settings.spatialVarianceEstimationHistoryThreshold = 4;
 
         // (pixels) - pre-accumulation spatial reuse pass blur radius (0 = disabled, must be used in case of probabilistic sampling) <- we're using probabilistic sampling
@@ -53,8 +53,6 @@ namespace NrdConfig
         nrd::ReblurSettings settings = {};
         settings.enableAntiFirefly = true;
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
-        settings.hitDistanceParameters.A = 0.0f;
-        settings.hitDistanceParameters.B = 0.0f;
         settings.planeDistanceSensitivity = 0.002f;
         settings.diffusePrepassBlurRadius = 0.0f;
         settings.specularPrepassBlurRadius = 0.0f;

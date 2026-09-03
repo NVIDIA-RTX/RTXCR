@@ -33,7 +33,7 @@
 #include <vulkan/vulkan.h>
 #include <nvrhi/vulkan.h>
 // Needed to access internal state of VK resources
-#include "../../../donut/nvrhi/src/vulkan/vulkan-backend.h"
+#include "../../../../../external/donut/nvrhi/src/vulkan/vulkan-backend.h"
 #endif
 
 #include <vector>
@@ -157,39 +157,6 @@ static std::wstring GetSlInterposerDllLocation()
 
     std::filesystem::path dllPath = std::filesystem::path(path).parent_path() / "sl.interposer.dll";
     return dllPath.wstring();
-}
-
-static D3D12_RESOURCE_STATES NvRHIStateToD3D12(nvrhi::ResourceStates stateBits)
-{
-    if (stateBits == nvrhi::ResourceStates::Common)
-    {
-        return D3D12_RESOURCE_STATE_COMMON;
-    }
-
-    D3D12_RESOURCE_STATES result = D3D12_RESOURCE_STATE_COMMON; // also 0
-
-    if ((stateBits & nvrhi::ResourceStates::ConstantBuffer) != 0) result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    if ((stateBits & nvrhi::ResourceStates::VertexBuffer) != 0) result |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    if ((stateBits & nvrhi::ResourceStates::IndexBuffer) != 0) result |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
-    if ((stateBits & nvrhi::ResourceStates::IndirectArgument) != 0) result |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    if ((stateBits & nvrhi::ResourceStates::ShaderResource) != 0) result |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if ((stateBits & nvrhi::ResourceStates::UnorderedAccess) != 0) result |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    if ((stateBits & nvrhi::ResourceStates::RenderTarget) != 0) result |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-    if ((stateBits & nvrhi::ResourceStates::DepthWrite) != 0) result |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    if ((stateBits & nvrhi::ResourceStates::DepthRead) != 0) result |= D3D12_RESOURCE_STATE_DEPTH_READ;
-    if ((stateBits & nvrhi::ResourceStates::StreamOut) != 0) result |= D3D12_RESOURCE_STATE_STREAM_OUT;
-    if ((stateBits & nvrhi::ResourceStates::CopyDest) != 0) result |= D3D12_RESOURCE_STATE_COPY_DEST;
-    if ((stateBits & nvrhi::ResourceStates::CopySource) != 0) result |= D3D12_RESOURCE_STATE_COPY_SOURCE;
-    if ((stateBits & nvrhi::ResourceStates::ResolveDest) != 0) result |= D3D12_RESOURCE_STATE_RESOLVE_DEST;
-    if ((stateBits & nvrhi::ResourceStates::ResolveSource) != 0) result |= D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
-    if ((stateBits & nvrhi::ResourceStates::Present) != 0) result |= D3D12_RESOURCE_STATE_PRESENT;
-    if ((stateBits & nvrhi::ResourceStates::AccelStructRead) != 0) result |= D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-    if ((stateBits & nvrhi::ResourceStates::AccelStructWrite) != 0) result |= D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-    if ((stateBits & nvrhi::ResourceStates::AccelStructBuildInput) != 0) result |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if ((stateBits & nvrhi::ResourceStates::AccelStructBuildBlas) != 0) result |= D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-    if ((stateBits & nvrhi::ResourceStates::ShadingRateSurface) != 0) result |= D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
-
-    return result;
 }
 
 bool SLWrapper::s_SlInitialized = false;
@@ -359,13 +326,25 @@ bool SLWrapper::IsSupportedVulkanDevice(const std::vector<sl::Feature>& features
 }
 #endif
 
-sl::Resource SLWrapper::NvRHITextureToSL(nvrhi::TextureHandle texture, nvrhi::ResourceStates stateBits)
+sl::Resource SLWrapper::NvRHITextureToSL(
+    nvrhi::CommandListHandle commandList,
+    nvrhi::TextureHandle texture,
+    nvrhi::ResourceStates stateBits)
 {
     sl::Resource slResource;
 #if USE_DX12
     if (m_GraphicsAPI == nvrhi::GraphicsAPI::D3D12)
     {
-        slResource = sl::Resource(sl::ResourceType::eTex2d, texture->getNativeObject(nvrhi::ObjectTypes::D3D12_Resource), NvRHIStateToD3D12(stateBits));
+        // Streamline records legacy ResourceBarrier calls directly on the native
+        // command list. Enhanced barriers require the resource to be in COMMON
+        // before that handoff, and the barrier must be committed so the native
+        // command list and NVRHI's state tracker agree.
+        commandList->setTextureState(texture, nvrhi::AllSubresources, nvrhi::ResourceStates::Common);
+        commandList->commitBarriers();
+        slResource = sl::Resource(
+            sl::ResourceType::eTex2d,
+            texture->getNativeObject(nvrhi::ObjectTypes::D3D12_Resource),
+            D3D12_RESOURCE_STATE_COMMON);
     }
 #endif
 #if USE_VK
@@ -373,12 +352,13 @@ sl::Resource SLWrapper::NvRHITextureToSL(nvrhi::TextureHandle texture, nvrhi::Re
     {
         const nvrhi::TextureDesc& desc = texture->getDesc();
         const vk::ImageCreateInfo& vkDesc = dynamic_cast<nvrhi::vulkan::Texture*>(texture.Get())->imageInfo;
+        const vk::ImageLayout imageLayout = nvrhi::vulkan::convertResourceState(stateBits, true).imageLayout;
         slResource = sl::Resource(
             sl::ResourceType::eTex2d,
             texture->getNativeObject(nvrhi::ObjectTypes::VK_Image),
             texture->getNativeObject(nvrhi::ObjectTypes::VK_DeviceMemory),
             texture->getNativeView(nvrhi::ObjectTypes::VK_ImageView, desc.format, nvrhi::AllSubresources),
-            static_cast<uint32_t>(vkDesc.initialLayout)
+            static_cast<uint32_t>(imageLayout)
         );
 
         slResource.width = desc.width;
@@ -432,7 +412,7 @@ bool SLWrapper::AdvanceFrame()
 
 bool SLWrapper::SetConstants(sl::Constants& consts)
 {
-    if (!s_SlInitialized || !m_dlssAvailable || !m_dlssrrAvailable)
+    if (!s_SlInitialized || !m_dlssAvailable)
     {
         log::warning("SL not initialized or DLSS not available.");
         return false;
@@ -513,11 +493,14 @@ bool SLWrapper::TagDLSSGeneralBuffers(
 
     sl::Result slRes = sl::Result::eOk;
 
-    commandList->setTextureState(motionVectors, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(depth, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->setTextureState(motionVectors, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        commandList->setTextureState(depth, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+    }
 
-    sl::Resource slMvecResource = NvRHITextureToSL(motionVectors, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slDepthResource = NvRHITextureToSL(depth, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slMvecResource = NvRHITextureToSL(commandList, motionVectors, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slDepthResource = NvRHITextureToSL(commandList, depth, nvrhi::ResourceStates::ShaderResource);
 
     sl::Extent inputRes = { 0, 0, renderSize.x, renderSize.y };
     sl::Extent outputRes = { 0, 0, displaySize.x, displaySize.y };
@@ -526,6 +509,11 @@ bool SLWrapper::TagDLSSGeneralBuffers(
     sl::ResourceTag slDepthTag(&slDepthResource, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow, &inputRes);
 
     sl::ResourceTag dlssgResourceTags[] = { slMvecTag, slDepthTag };
+
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->commitBarriers();
+    }
 
     slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssgResourceTags, _countof(dlssgResourceTags), NvRHICommandListToNative(commandList));
     if (slRes != sl::Result::eOk)
@@ -557,13 +545,16 @@ bool SLWrapper::TagDLSSBuffers(
 
     sl::Result slRes = sl::Result::eOk;
 
-    // Streamline manages state transitions automatically, so this is not
-    // necessary, but it is still useful to place resources in a known state
-    commandList->setTextureState(inputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(outputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
+    // Preserve the existing explicit Vulkan states. D3D12 resources are
+    // transitioned to COMMON and committed by NvRHITextureToSL instead.
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->setTextureState(inputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        commandList->setTextureState(outputColor, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
+    }
 
-    sl::Resource slColorResource = NvRHITextureToSL(inputColor, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slOutputResource = NvRHITextureToSL(outputColor, nvrhi::ResourceStates::RenderTarget);
+    sl::Resource slColorResource = NvRHITextureToSL(commandList, inputColor, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slOutputResource = NvRHITextureToSL(commandList, outputColor, nvrhi::ResourceStates::RenderTarget);
 
     sl::Extent inputRes = {0, 0, renderSize.x, renderSize.y};
     sl::Extent outputRes = {0, 0, displaySize.x, displaySize.y};
@@ -576,12 +567,20 @@ bool SLWrapper::TagDLSSBuffers(
     // Exposure is optional but recommended, auto-exposure will be used if not provided
     if (exposure)
     {
-        commandList->setTextureState(exposure, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-        sl::Resource slExposureResource = NvRHITextureToSL(exposure, nvrhi::ResourceStates::ShaderResource);
+        if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+        {
+            commandList->setTextureState(exposure, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        }
+        sl::Resource slExposureResource = NvRHITextureToSL(commandList, exposure, nvrhi::ResourceStates::ShaderResource);
 
         sl::Extent exposureRes = {0, 0, 1, 1};
         sl::ResourceTag slExposureTag(&slExposureResource, sl::kBufferTypeExposure, sl::ResourceLifecycle::eValidUntilPresent, &exposureRes);
         dlssResourceTags.push_back(slExposureTag);
+    }
+
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->commitBarriers();
     }
 
     slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssResourceTags.data(), static_cast<uint32_t>(dlssResourceTags.size()), NvRHICommandListToNative(commandList));
@@ -621,15 +620,16 @@ bool SLWrapper::TagDLSSRRBuffers(
 
     sl::Result slRes;
 
-    // Streamline manages state transitions automatically, so this is not
-    // necessary, but it is still useful to place resources in a known state
-    commandList->setTextureState(diffuseAlbedo, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(specAlbedo, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-    commandList->setTextureState(normalRoughness, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->setTextureState(diffuseAlbedo, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        commandList->setTextureState(specAlbedo, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        commandList->setTextureState(normalRoughness, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+    }
 
-    sl::Resource slDiffuseAlbedoResource = NvRHITextureToSL(diffuseAlbedo, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slSpecAlbedoResource = NvRHITextureToSL(specAlbedo, nvrhi::ResourceStates::ShaderResource);
-    sl::Resource slNormalRoughnessResource = NvRHITextureToSL(normalRoughness, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slDiffuseAlbedoResource = NvRHITextureToSL(commandList, diffuseAlbedo, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slSpecAlbedoResource = NvRHITextureToSL(commandList, specAlbedo, nvrhi::ResourceStates::ShaderResource);
+    sl::Resource slNormalRoughnessResource = NvRHITextureToSL(commandList, normalRoughness, nvrhi::ResourceStates::ShaderResource);
 
     sl::Extent inputRes = {0, 0, renderSize.x, renderSize.y};
     sl::Extent outputRes = {0, 0, displaySize.x, displaySize.y};
@@ -643,11 +643,19 @@ bool SLWrapper::TagDLSSRRBuffers(
     // Specular hit distance is optional
     if (specHitDist)
     {
-        commandList->setTextureState(specHitDist, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
-        sl::Resource slSpecHitDistResource = NvRHITextureToSL(specHitDist, nvrhi::ResourceStates::ShaderResource);
+        if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+        {
+            commandList->setTextureState(specHitDist, nvrhi::AllSubresources, nvrhi::ResourceStates::ShaderResource);
+        }
+        sl::Resource slSpecHitDistResource = NvRHITextureToSL(commandList, specHitDist, nvrhi::ResourceStates::ShaderResource);
 
         sl::ResourceTag slSpecHitDistTag(&slSpecHitDistResource, sl::kBufferTypeSpecularHitDistance, sl::ResourceLifecycle::eValidUntilPresent, &inputRes);
         dlssrrResourceTags.push_back(slSpecHitDistTag);
+    }
+
+    if (m_GraphicsAPI == nvrhi::GraphicsAPI::VULKAN)
+    {
+        commandList->commitBarriers();
     }
 
     slRes = slSetTagForFrame(*m_FrameToken, m_ViewportHandle, dlssrrResourceTags.data(), static_cast<uint32_t>(dlssrrResourceTags.size()), NvRHICommandListToNative(commandList));

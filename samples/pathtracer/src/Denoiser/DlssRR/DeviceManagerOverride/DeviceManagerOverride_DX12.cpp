@@ -366,7 +366,7 @@ bool DeviceManagerOverride_DX12::CreateDevice()
     m_SwapChainDesc.BufferUsage = m_DeviceParams.swapChainUsage;
     m_SwapChainDesc.BufferCount = m_DeviceParams.swapChainBufferCount;
     m_SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    m_SwapChainDesc.Flags = m_DeviceParams.allowModeSwitch ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH : 0;
+    m_SwapChainDesc.Flags = 0;
 
     // Special processing for sRGB swap chain formats.
     // DXGI will not create a swap chain with an sRGB format, but its contents will be interpreted as sRGB.
@@ -466,13 +466,16 @@ bool DeviceManagerOverride_DX12::CreateDevice()
     m_FullScreenDesc.RefreshRate.Denominator = 1;
     m_FullScreenDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE;
     m_FullScreenDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
-    m_FullScreenDesc.Windowed = !m_DeviceParams.startFullscreen;
+    m_FullScreenDesc.Windowed = TRUE; // DXGI always windowed; fullscreen handled by GLFW
 
     // Get the proxy swapchain using the intercepted API 
     RefCountPtr<IDXGISwapChain1> pSwapChain1_base;
     hr = m_FactoryProxy->CreateSwapChainForHwnd(m_GraphicsQueue, m_hWnd, &m_SwapChainDesc, &m_FullScreenDesc, nullptr, &pSwapChain1_base);
     HR_RETURN(hr);
     hr = pSwapChain1_base->QueryInterface(IID_PPV_ARGS(&m_SwapChainProxy));
+    HR_RETURN(hr);
+
+    hr = m_FactoryProxy->MakeWindowAssociation(m_hWnd, DXGI_MWA_NO_ALT_ENTER);
     HR_RETURN(hr);
 
     // Get the native swap chain by requesting it explicitly
@@ -705,33 +708,6 @@ bool DeviceManagerOverride_DX12::BeginFrame()
         // Reload DLSSG
         SLWrapper::FeatureLoad(sl::kFeatureDLSS_G, true);
         SLWrapper::Quiet_DLSSG_SwapChainRecreation();
-    }
-    else
-    {
-        DXGI_SWAP_CHAIN_DESC1 newSwapChainDesc;
-        DXGI_SWAP_CHAIN_FULLSCREEN_DESC newFullScreenDesc;
-        if (SUCCEEDED(m_NativeSwapChain->GetDesc1(&newSwapChainDesc)) && SUCCEEDED(m_NativeSwapChain->GetFullscreenDesc(&newFullScreenDesc)))
-        {
-            if (m_FullScreenDesc.Windowed != newFullScreenDesc.Windowed)
-            {
-
-                waitForQueue();
-
-                BackBufferResizing();
-
-                m_FullScreenDesc = newFullScreenDesc;
-                m_SwapChainDesc = newSwapChainDesc;
-                m_DeviceParams.backBufferWidth = newSwapChainDesc.Width;
-                m_DeviceParams.backBufferHeight = newSwapChainDesc.Height;
-
-                if (newFullScreenDesc.Windowed)
-                    glfwSetWindowMonitor(m_Window, nullptr, 50, 50, newSwapChainDesc.Width, newSwapChainDesc.Height, 0);
-
-                ResizeSwapChain();
-                BackBufferResized();
-            }
-
-        }
     }
 
     return true;

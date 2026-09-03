@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # NVIDIA CORPORATION and its licensors retain all intellectual property
 # and proprietary rights in and to this software, related documentation
@@ -6,7 +6,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-cmake_minimum_required (VERSION 3.19)
+cmake_minimum_required (VERSION 3.22)
 
 include(${CMAKE_SOURCE_DIR}/external/donut/compileshaders.cmake)
 file(GLOB_RECURSE shaders "*.hlsl" "*.hlsli")
@@ -14,21 +14,17 @@ file(GLOB_RECURSE shaders "*.hlsl" "*.hlsli")
 set(project pathtracer)
 set(folder "Samples/Pathtracer")
 
-option (NRD_EMBEDS_SPIRV_SHADERS "NRD embeds SPIRV shaders" OFF)
-option (NRD_EMBEDS_DXIL_SHADERS "NRD embeds DXIL shaders" OFF)
-option (NRD_EMBEDS_DXBC_SHADERS "NRD embeds DXBC shaders" OFF)
-
 # Set External includes
 set(EXTERNAL_DIR ${CMAKE_SOURCE_DIR}/external)
 
 # Set SDK includes
 set(RTXCR_SDK_DIR ${CMAKE_SOURCE_DIR}/libraries)
 
-set (SHADERMAKE_GENERAL_ARGS_SPIRV "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders/Include
+set (SHADERMAKE_GENERAL_ARGS_SPIRV "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders
                                     -I ${CMAKE_CURRENT_SOURCE_DIR}/..
                                     -I ${RTXCR_SDK_DIR}/rtxcr/material/shaders/include
                                     -I ${RTXCR_SDK_DIR}/rtxcr/geometry/shaders/include")
-set (SHADERMAKE_GENERAL_ARGS_DXIL "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders/Include
+set (SHADERMAKE_GENERAL_ARGS_DXIL "-I ${EXTERNAL_DIR}/RayTracingDenoiser/Shaders
                                    -I ${CMAKE_CURRENT_SOURCE_DIR}/..
                                    -I ${RTXCR_SDK_DIR}/rtxcr/material/shaders/include
                                    -I ${RTXCR_SDK_DIR}/rtxcr/geometry/shaders/include")

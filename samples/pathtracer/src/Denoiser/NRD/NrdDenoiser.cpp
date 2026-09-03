@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * NVIDIA CORPORATION and its licensors retain all intellectual property
 * and proprietary rights in and to this software, related documentation
@@ -43,8 +43,6 @@ bool NrdDenoiser::RecreateDenoiserPipelines()
     {
         std::vector<donut::engine::ShaderMacro> denoiseReblurMacros =
         {
-            donut::engine::ShaderMacro("NRD_NORMAL_ENCODING", "2"),
-            donut::engine::ShaderMacro("NRD_ROUGHNESS_ENCODING", "1"),
             donut::engine::ShaderMacro("USE_RELAX", "0"),
         };
 
@@ -65,8 +63,6 @@ bool NrdDenoiser::RecreateDenoiserPipelines()
     {
         std::vector<donut::engine::ShaderMacro> denoiseRelaxMacros =
         {
-            donut::engine::ShaderMacro("NRD_NORMAL_ENCODING", "2"),
-            donut::engine::ShaderMacro("NRD_ROUGHNESS_ENCODING", "1"),
             donut::engine::ShaderMacro("USE_RELAX", "1"),
         };
 

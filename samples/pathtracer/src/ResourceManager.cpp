@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -240,7 +240,8 @@ void ResourceManager::CreateEnvironmentMap(donut::engine::TextureCache* textureC
 {
     const std::filesystem::path environmentMapPath = app::GetDirectoryWithExecutable() / envMapFileName.c_str();
 
-    m_pathTracerResources.environmentMapTexture = textureCache->LoadTextureFromFileDeferred(environmentMapPath, false);
+    m_pathTracerResources.environmentMapTexture = textureCache->LoadTextureFromFileDeferred(
+        environmentMapPath, donut::engine::TextureLoadOptions{ donut::engine::SRGBMode::ForceLinear });
     m_pathTracerResources.isEnvMapUpdated = true;
 }
 

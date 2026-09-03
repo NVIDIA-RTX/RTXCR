@@ -145,8 +145,18 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
 
         if (!strcmp(arg, "-screenshot"))
         {
-            const char* screenshotName = (char*)argv[n + 1];
-            strcpy(m_ui.screenshotName, screenshotName);
+            if (n + 1 >= argc)
+            {
+                log::error("Missing filename after -screenshot.");
+            }
+            else
+            {
+                const int charactersWritten = snprintf(m_ui.screenshotName, sizeof(m_ui.screenshotName), "%s", argv[n + 1]);
+                if (charactersWritten < 0 || static_cast<size_t>(charactersWritten) >= sizeof(m_ui.screenshotName))
+                {
+                    log::warning("Screenshot filename was truncated to %zu characters.", sizeof(m_ui.screenshotName) - 1);
+                }
+            }
         }
 
         if (!strcmp(arg, "-enableSky"))
@@ -247,17 +257,17 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
         m_ui.hairTessellationType = TessellationType::DisjointOrthogonalTriangleStrip;
     }
 
-    // Fallback to NRD and TAA when DLSS is NOT supported
-    if (!SLWrapper::IsDLSSSupported())
+    // Fallback to NRD when DLSS-RR is unavailable.
+    if ((!SLWrapper::IsDLSSSupported() || !SLWrapper::IsDLSSRRSupported()) &&
+        m_ui.denoiserSelection == DenoiserSelection::DlssRr)
     {
-        if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
-        {
-            m_ui.denoiserSelection = DenoiserSelection::Nrd;
-        }
-        if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
-        {
-            m_ui.upscalerSelection = UpscalerSelection::TAA;
-        }
+        m_ui.denoiserSelection = DenoiserSelection::Nrd;
+    }
+
+    // Fallback to TAA when DLSS Super Resolution is unavailable.
+    if (!SLWrapper::IsDLSSSupported() && m_ui.upscalerSelection == UpscalerSelection::DLSS)
+    {
+        m_ui.upscalerSelection = UpscalerSelection::TAA;
     }
 
     m_nativeFileSystem = std::make_shared<vfs::NativeFileSystem>();
@@ -338,7 +348,7 @@ bool SampleRenderer::Init(int argc, const char* const* argv)
     }
 
     // Reflex
-    if (SLWrapper::IsDLSSSupported() && SLWrapper::IsReflexSupported())
+    if (SLWrapper::IsReflexSupported())
     {
         // Set the callbacks for Reflex
         GetDeviceManager()->m_callbacks.beforeFrame   = [&](donut::app::DeviceManager& m, uint32_t f) { SLWrapper::ReflexCallback_Sleep(m, f); };
@@ -600,8 +610,12 @@ void SampleRenderer::updateConstantBuffers()
     globalConstants.enableDenoiser = enableDenoiser;
     if (globalConstants.enableDenoiser)
     {
-        nrd::HitDistanceParameters hitDistanceParameters;
-        globalConstants.nrdHitDistanceParams = (float4&)hitDistanceParameters;
+        const nrd::ReblurHitDistanceParameters& hitDistanceParameters = m_ui.reblurSettings.hitDistanceParameters;
+        globalConstants.nrdHitDistanceParams = float4(
+            hitDistanceParameters.A,
+            hitDistanceParameters.B,
+            hitDistanceParameters.C,
+            0.0f);
     }
     globalConstants.enableDlssRR = (m_ui.denoiserSelection == DenoiserSelection::DlssRr) ? 1 : 0;
 
@@ -710,7 +724,8 @@ void SampleRenderer::updateConstantBuffers()
     }
     globalConstants.enableSssMicrofacet = m_ui.enableSssMicrofacet;
     {
-        const float sssWeightSumRcp = 1.0f / (m_ui.sssWeight + m_ui.sssSpecularWeight);
+        const float sssWeightSum = m_ui.sssWeight + m_ui.sssSpecularWeight;
+        const float sssWeightSumRcp = sssWeightSum > 1e-7f ? 1.0f / sssWeightSum : 0.0f;
         globalConstants.sssWeight = m_ui.enableSssMicrofacet ? m_ui.sssWeight * sssWeightSumRcp : 1.0f;
         globalConstants.sssSpecularWeight = m_ui.sssSpecularWeight * sssWeightSumRcp;
         globalConstants.enableSssRoughnessOverride = m_ui.enableSssRoughnessOverride;
@@ -749,7 +764,8 @@ void SampleRenderer::updateConstantBuffers()
     // Animation
     globalConstants.enableAnimation = m_ui.enableAnimations;
 
-    globalConstants.targetLight = m_ui.targetLight;
+    const bool validTargetLight = m_ui.targetLight >= 0 && static_cast<uint32_t>(m_ui.targetLight) < constants.lightCount;
+    globalConstants.targetLight = validTargetLight ? m_ui.targetLight : -1;
     globalConstants.debugOutputMode = m_ui.debugOutput;
     globalConstants.debugScale = m_ui.debugScale;
     globalConstants.debugMin = m_ui.debugMinMax[0];
@@ -922,7 +938,7 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
     }
 
     // REFLEX
-    if (SLWrapper::IsDLSSSupported() && SLWrapper::IsReflexSupported())
+    if (SLWrapper::IsReflexSupported())
     {
         auto reflexConst = sl::ReflexOptions{};
         reflexConst.mode = m_ui.reflexMode;
@@ -1228,7 +1244,8 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
             {
                 m_nrdDenoiser->Dispatch(m_commandList, m_renderSize, m_view, m_viewPrevious, GetFrameIndex());
             }
-            else if (m_ui.denoiserSelection == DenoiserSelection::DlssRr)
+            else if (m_ui.denoiserSelection == DenoiserSelection::DlssRr &&
+                     SLWrapper::IsDLSSSupported() && SLWrapper::IsDLSSRRSupported())
             {
                 const auto& gBufferResources = renderTargets.gBufferResources;
                 SLWrapper::TagDLSSRRBuffers(
@@ -1259,7 +1276,7 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
         // DLSS Upscaling
         if (m_ui.denoiserSelection != DenoiserSelection::DlssRr)
         {
-            if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
+            if (m_ui.upscalerSelection == UpscalerSelection::DLSS && SLWrapper::IsDLSSSupported())
             {
                 const auto& gBufferResources = renderTargets.gBufferResources;
                 SLWrapper::TagDLSSBuffers(m_commandList,
@@ -1347,22 +1364,20 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
 
     if (m_ui.captureScreenshot)
     {
-        const ResourceManager::DebuggingResources& debuggingResources = m_resourceManager.GetDebuggingResources();
-        std::string screenshotFileStr = "../../../bin/screenshots/";
-        if (!strstr(m_ui.screenshotName, ".png"))
+        const std::filesystem::path outputDirectory = app::GetDirectoryWithExecutable() / "screenshots";
+        std::filesystem::path screenshotName = std::filesystem::path(m_ui.screenshotName).filename();
+        if (screenshotName.empty() || screenshotName == ".png")
         {
-            screenshotFileStr += std::string(m_ui.screenshotName) + ".png";
+            screenshotName = m_ui.defaultScreenShotName;
+            snprintf(m_ui.screenshotName, sizeof(m_ui.screenshotName), "%s", m_ui.defaultScreenShotName);
         }
-        else if (strlen(m_ui.screenshotName) == 0 || strcmp(m_ui.screenshotName, ".png") == 0)
+        else if (screenshotName.extension() != ".png")
         {
-            memcpy(m_ui.screenshotName, m_ui.defaultScreenShotName, strlen(m_ui.defaultScreenShotName) + 1);
+            screenshotName.replace_extension(".png");
+        }
 
-            screenshotFileStr += std::string(m_ui.defaultScreenShotName);
-        }
-        else
-        {
-            screenshotFileStr += std::string(m_ui.screenshotName);
-        }
+        const std::filesystem::path screenshotFilePath = outputDirectory / screenshotName;
+        const std::string screenshotFileStr = screenshotFilePath.string();
 
         nvrhi::TextureHandle screenshotTexture = {};
         if (!enableDebugging)
@@ -1381,7 +1396,30 @@ void SampleRenderer::Render(nvrhi::IFramebuffer* framebuffer)
             screenshotTexture = renderTargets.pathTracerOutputTexture;
         }
 
-        SaveTextureToFile(GetDevice(), m_CommonPasses.get(), screenshotTexture, nvrhi::ResourceStates::UnorderedAccess, screenshotFileStr.c_str());
+        std::error_code directoryError;
+        std::filesystem::create_directories(outputDirectory, directoryError);
+
+        bool screenshotSaved = false;
+        if (!screenshotTexture)
+        {
+            log::error("Cannot save screenshot '%s': no source texture is available.", screenshotFileStr.c_str());
+        }
+        else if (directoryError)
+        {
+            log::error("Cannot create screenshot directory '%s': %s.", outputDirectory.string().c_str(), directoryError.message().c_str());
+        }
+        else
+        {
+            screenshotSaved = SaveTextureToFile(GetDevice(), m_CommonPasses.get(), screenshotTexture, nvrhi::ResourceStates::UnorderedAccess, screenshotFileStr.c_str());
+            if (screenshotSaved)
+            {
+                log::info("Saved screenshot to '%s'.", screenshotFileStr.c_str());
+            }
+            else
+            {
+                log::error("Failed to save screenshot to '%s'.", screenshotFileStr.c_str());
+            }
+        }
 
         m_ui.captureScreenshot = false;
     }

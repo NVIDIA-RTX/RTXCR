@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # NVIDIA CORPORATION and its licensors retain all intellectual property
 # and proprietary rights in and to this software, related documentation
@@ -6,7 +6,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-cmake_minimum_required (VERSION 3.19)
+cmake_minimum_required (VERSION 3.22)
 
 project(
     RTXCR
@@ -95,6 +95,7 @@ option(DONUT_WITH_DX12 "" ON)
 option(DONUT_WITH_VULKAN "" ON)
 option(DONUT_WITH_LZ4 "" OFF)
 option(DONUT_WITH_MINIZ "" OFF)
+option(DONUT_WITH_KTX "" OFF)
 set(DONUT_WITH_VULKAN ON CACHE BOOL "Enable the Vulkan version of Donut")
 set(NVRHI_WITH_NVAPI ON CACHE BOOL "" FORCE)
 set(DONUT_WITH_AFTERMATH OFF CACHE BOOL "" FORCE)

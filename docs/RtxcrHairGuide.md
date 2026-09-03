@@ -194,10 +194,13 @@ continueTrace = RTXCR_SampleChiangBsdf(hairMaterialInteraction, viewVectorLocal,
 const HairMaterialInteractionBcsdf hairMaterialInteractionBcsdf =
     createHairMaterialInteractionBcsdf(hairMaterialData, g_Global.diffuseReflectionTint, g_Global.diffuseReflectionWeight, g_Global.hairRoughness);
 const float h = 2.0f * Rand(rngState) - 1.0f;
-const float lobeRandom = Rand(rngState);
+const float3 rand2[2] = {
+    float3(Rand(rngState), Rand(rngState), Rand(rngState)),
+    float3(Rand(rngState), Rand(rngState), 0.0f)
+};
 float3 bsdfSpecular = float3(0.0f, 0.0f, 0.0f);
 float3 bsdfDiffuse = float3(0.0f, 0.0f, 0.0f);
-continueTrace = RTXCR_SampleFarFieldBcsdf(hairInteractionSurface, hairMaterialInteractionBcsdf, viewVectorLocal, h, lobeRandom, rand2, sampleDirection, bsdfSpecular, bsdfDiffuse, bsdfPdf);
+continueTrace = RTXCR_SampleFarFieldBcsdf(hairInteractionSurface, hairMaterialInteractionBcsdf, viewVectorLocal, h, rand2, sampleDirection, bsdfSpecular, bsdfDiffuse, bsdfPdf);
 bsdfWeight = bsdfSpecular + bsdfDiffuse;
 ```
 

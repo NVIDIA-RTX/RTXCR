@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -17,6 +17,7 @@
 #include <imgui_internal.h>
 
 #include "../SampleRenderer.h"
+#include "../../shared/lightingCb.h"
 
 using namespace donut::app;
 using namespace donut::engine;
@@ -54,6 +55,31 @@ namespace
     inline dm::float2 MakeFloat2(const ImVec2& v)
     {
         return dm::float2{ v.x, v.y };
+    }
+
+    template <typename T>
+    bool EnumCombo(const char* label, T& value, const char* items)
+    {
+        int selectedItem = static_cast<int>(value);
+        if (!ImGui::Combo(label, &selectedItem, items))
+        {
+            return false;
+        }
+
+        value = static_cast<T>(selectedItem);
+        return true;
+    }
+
+    bool SliderUInt(const char* label, uint32_t& value, uint32_t minValue, uint32_t maxValue)
+    {
+        return ImGui::SliderScalar(label, ImGuiDataType_U32, &value, &minValue, &maxValue, "%u");
+    }
+
+    uint32_t GetRelaxHistoryFixFrameNumMax(uint32_t maxFastAccumulatedFrameNum)
+    {
+        return maxFastAccumulatedFrameNum == 0
+            ? 0
+            : std::min(maxFastAccumulatedFrameNum - 1, 3u);
     }
 
 
@@ -183,6 +209,7 @@ void PathtracerUI::buildUI(void)
 
         DrawScreenCenteredText(messageBuffer);
 
+        ImGui::PopFont();
         EndFullScreenWindow();
 
         return;
@@ -297,18 +324,21 @@ void PathtracerUI::buildUI(void)
                 {
                     const bool is_selected = scene == currentSceneFullPath;
                     const std::string sceneStr = scene.substr(scene.find_last_of("/\\") + 1);
+                    ImGui::PushID(scene.c_str());
                     if (ImGui::Selectable(sceneStr.c_str(), is_selected))
                     {
                         refreshScene(scene);
 
                         m_selectedLight = nullptr;
                         m_selectedLightIndex = 0;
+                        m_ui.targetLight = -1;
                     }
 
                     if (is_selected)
                     {
                         ImGui::SetItemDefaultFocus();
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
@@ -316,9 +346,9 @@ void PathtracerUI::buildUI(void)
             if (ImGui::Button("Refresh Scene"))
             {
                 refreshScene(currentSceneFullPath);
-
-                const auto& lights = m_app.GetScene()->GetNativeScene()->GetSceneGraph()->GetLights();
-                m_selectedLight = lights[m_selectedLightIndex];
+                m_selectedLight = nullptr;
+                m_selectedLightIndex = 0;
+                m_ui.targetLight = -1;
             }
 
             updateAccum |= ImGui::Checkbox("Back Face Culling", &m_ui.enableBackFaceCull); ImGui::SameLine();
@@ -329,7 +359,7 @@ void PathtracerUI::buildUI(void)
                 ImGui::TableNextColumn();
                 updateAccum |= ImGui::Checkbox("Transmission", &m_ui.enableTransmission);
                 ImGui::TableNextColumn();
-                updateAccum |= ImGui::Combo("Jitter Mode", (int*)&m_ui.jitterMode, m_ui.jitterModeStrings);
+                updateAccum |= EnumCombo("Jitter Mode", m_ui.jitterMode, m_ui.jitterModeStrings);
                 ImGui::EndTable();
             }
 #endif
@@ -341,7 +371,7 @@ void PathtracerUI::buildUI(void)
 
             ImGui::Text("Name:");
             ImGui::SameLine();
-            ImGui::InputText(" ", m_ui.screenshotName, m_ui.kBufSize, ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::InputText("##ScreenshotName", m_ui.screenshotName, m_ui.kBufSize, ImGuiInputTextFlags_EnterReturnsTrue);
             ImGui::SameLine();
             if (ImGui::Button("Capture"))
             {
@@ -388,15 +418,17 @@ void PathtracerUI::buildUI(void)
                             ImGui::Indent(12.0f);
                             if (m_ui.enableDlfg)
                             {
-                                sl::ReflexMode reflexModeDlfg = sl::ReflexMode::eOff;
+                                int reflexModeDlfg = m_ui.reflexMode == sl::ReflexMode::eLowLatencyWithBoost ? 1 : 0;
                                 // Reflex is required when DLFG is enabled
-                                ImGui::Combo("Reflex Mode", (int*)&reflexModeDlfg, "Low Latency\0LowLatency + Boost\0");
+                                ImGui::Combo("Reflex Mode", &reflexModeDlfg, "Low Latency\0Low Latency + Boost\0");
 
-                                m_ui.reflexMode = (sl::ReflexMode)((int)reflexModeDlfg + 1);
+                                m_ui.reflexMode = reflexModeDlfg == 0
+                                    ? sl::ReflexMode::eLowLatency
+                                    : sl::ReflexMode::eLowLatencyWithBoost;
                             }
                             else
                             {
-                                ImGui::Combo("Reflex Mode", (int*)&m_ui.reflexMode, m_ui.reflexSelectionStrings);
+                                EnumCombo("Reflex Mode", m_ui.reflexMode, m_ui.reflexSelectionStrings);
                             }
                             ImGui::Indent(-12.0f);
                         }
@@ -427,7 +459,7 @@ void PathtracerUI::buildUI(void)
             updateAccum |= ImGui::SliderFloat("Exposure Adjustment", &m_ui.exposureAdjustment, -8.f, 8.0f);
 
             // Debug views
-            updateAccum |= ImGui::Combo("Debug Output", (int*)&m_ui.debugOutput, m_ui.debugOutputTypeStrings);
+            updateAccum |= EnumCombo("Debug Output", m_ui.debugOutput, m_ui.debugOutputTypeStrings);
             if (m_ui.debugOutput == RtxcrDebugOutputType::WhiteFurnace)
             {
                 updateAccum |= ImGui::SliderInt("White Furnace Test Sample Count", &m_ui.whiteFurnaceSampleCount, 1, 100000);
@@ -454,7 +486,7 @@ void PathtracerUI::buildUI(void)
             auto addDlssUpscalerOptions = [&]() -> void {
                 if (SLWrapper::IsDLSSSupported())
                 {
-                    updateAccum |= ImGui::Combo("Upscaler", (int*)&m_ui.upscalerSelection, m_ui.upscalerSelectionStrings);
+                    updateAccum |= EnumCombo("Upscaler", m_ui.upscalerSelection, m_ui.upscalerSelectionStrings);
 
                     if (m_ui.upscalerSelection == UpscalerSelection::DLSS)
                     {
@@ -480,20 +512,37 @@ void PathtracerUI::buildUI(void)
                 }
                 else
                 {
-                    updateAccum |= ImGui::Combo("Upscaler", (int*)&m_ui.upscalerSelection, "None\0TAA\0");
+                    updateAccum |= EnumCombo("Upscaler", m_ui.upscalerSelection, "None\0TAA\0");
                 }
             };
 
-            if (SLWrapper::IsDLSSSupported())
+            const bool isDlssRrSupported = SLWrapper::IsDLSSSupported() && SLWrapper::IsDLSSRRSupported();
+            if (isDlssRrSupported)
             {
-                updateAccum |= ImGui::Combo("Tech", (int*)&m_ui.denoiserSelection, m_ui.denoiserSelectionStrings);
+                updateAccum |= EnumCombo("Tech", m_ui.denoiserSelection, m_ui.denoiserSelectionStrings);
             }
             else
             {
-                // Fallback GUI when DLSS is NOT supported
-                static DenoiserSelection nonNvDenoiserSelection = DenoiserSelection::Nrd;
-                updateAccum |= ImGui::Combo("Tech", (int*)&nonNvDenoiserSelection, "None\0NRD\0Reference\0");
-                m_ui.denoiserSelection = (nonNvDenoiserSelection == DenoiserSelection::DlssRr) ? DenoiserSelection::Reference : nonNvDenoiserSelection;
+                int denoiserSelection = 1;
+                switch (m_ui.denoiserSelection)
+                {
+                    case DenoiserSelection::None:      denoiserSelection = 0; break;
+                    case DenoiserSelection::Nrd:       denoiserSelection = 1; break;
+                    case DenoiserSelection::Reference: denoiserSelection = 2; break;
+                    case DenoiserSelection::DlssRr:    denoiserSelection = 1; break;
+                }
+
+                if (ImGui::Combo("Tech", &denoiserSelection, "None\0NRD\0Reference\0"))
+                {
+                    updateAccum = true;
+                }
+
+                switch (denoiserSelection)
+                {
+                    case 0: m_ui.denoiserSelection = DenoiserSelection::None; break;
+                    case 1: m_ui.denoiserSelection = DenoiserSelection::Nrd; break;
+                    case 2: m_ui.denoiserSelection = DenoiserSelection::Reference; break;
+                }
             }
 
             switch (m_ui.denoiserSelection)
@@ -517,7 +566,7 @@ void PathtracerUI::buildUI(void)
                     m_ui.enableDenoiser = true;
                     m_ui.enableAccumulation = false;
 
-                    updateAccum |= ImGui::Combo("NRD Mode", (int*)&m_ui.nrdDenoiserMode, m_ui.nrdModeStrings);
+                    updateAccum |= EnumCombo("NRD Mode", m_ui.nrdDenoiserMode, m_ui.nrdModeStrings);
                     addDlssUpscalerOptions();
                     if (m_prevDenoiserSelection != DenoiserSelection::Nrd)
                     {
@@ -568,20 +617,32 @@ void PathtracerUI::buildUI(void)
                             {
                                 ImGui::Indent(12.0f);
 
-                                ImGui::SliderInt("History length (frames)", (int*)&m_ui.reblurSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM, "%d");
-                                ImGui::SliderInt("Fast history length (frames)", (int*)&m_ui.reblurSettings.maxFastAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM, "%d");
-                                ImGui::SliderInt("History fix (frames)", (int*)&m_ui.reblurSettings.historyFixFrameNum, 0, 3);
-                                ImGui::SliderFloat2("Pre-pass blur radius (px)", &m_ui.reblurSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                SliderUInt("History length (frames)", m_ui.reblurSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+                                SliderUInt("Fast history length (frames)", m_ui.reblurSettings.maxFastAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+                                const uint32_t historyFixFrameNumMax = m_ui.reblurSettings.maxFastAccumulatedFrameNum == 0
+                                    ? 0
+                                    : m_ui.reblurSettings.maxFastAccumulatedFrameNum - 1;
+                                m_ui.reblurSettings.historyFixFrameNum = std::min(m_ui.reblurSettings.historyFixFrameNum, historyFixFrameNumMax);
+                                SliderUInt("History fix (frames)", m_ui.reblurSettings.historyFixFrameNum, 0, historyFixFrameNumMax);
+                                ImGui::SliderFloat("Diffuse pre-pass blur radius (px)", &m_ui.reblurSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Specular pre-pass blur radius (px)", &m_ui.reblurSettings.specularPrepassBlurRadius, 0.0f, 100.0f, "%.1f");
                                 ImGui::SliderFloat("Min blur radius (px)", &m_ui.reblurSettings.minBlurRadius, 0.0f, 100.0f, "%.1f");
                                 ImGui::SliderFloat("Max blur radius (px)", &m_ui.reblurSettings.maxBlurRadius, 0.0f, 100.0f, "%.1f");
                                 ImGui::SliderFloat("Lobe angle fraction", &m_ui.reblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                                 ImGui::SliderFloat("Roughness fraction", &m_ui.reblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
-                                ImGui::SliderFloat("Responsive accumulation roughness", &m_ui.reblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Responsive accumulation roughness", &m_ui.reblurSettings.responsiveAccumulationSettings.roughnessThreshold, 0.0f, 1.0f, "%.2f");
+                                m_ui.reblurSettings.responsiveAccumulationSettings.minAccumulatedFrameNum = std::min(
+                                    m_ui.reblurSettings.responsiveAccumulationSettings.minAccumulatedFrameNum,
+                                    m_ui.reblurSettings.historyFixFrameNum);
+                                SliderUInt("Responsive minimum history (frames)",
+                                    m_ui.reblurSettings.responsiveAccumulationSettings.minAccumulatedFrameNum,
+                                    0,
+                                    m_ui.reblurSettings.historyFixFrameNum);
                                 ImGui::SliderFloat("Plane distance sensitivity", &m_ui.reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f, "%.3f");
                                 ImGui::SliderFloat2("Specular MV modification", m_ui.reblurSettings.specularProbabilityThresholdsForMvModification, 0.0f, 1.0f, "%.1f");
                                 if (m_ui.reblurSettings.enableAntiFirefly)
                                 {
-                                    ImGui::SliderFloat("Fire Fly Suppressor Min Relative Scale (%)", &m_ui.reblurSettings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f, "%.2f");
+                                    ImGui::SliderFloat("Firefly Suppressor Minimum Relative Scale", &m_ui.reblurSettings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f, "%.2f");
                                 }
                                 {
                                     int v = (int)m_ui.reblurSettings.checkerboardMode;
@@ -597,23 +658,21 @@ void PathtracerUI::buildUI(void)
                                 if (ImGui::CollapsingHeader("Hit Distance"))
                                 {
                                     ImGui::Indent(12.0f);
-                                    ImGui::SliderFloat("Constant Value", &m_ui.reblurSettings.hitDistanceParameters.A, 0.0f, 1000.0f, "%.1f");
+                                    ImGui::SliderFloat("Constant Value", &m_ui.reblurSettings.hitDistanceParameters.A, 0.0001f, 1000.0f, "%.1f");
                                     ImGui::SliderFloat("ViewZ Based Linear Scale", &m_ui.reblurSettings.hitDistanceParameters.B, 0.0001f, 1000.0f, "%.1f");
                                     ImGui::SliderFloat("Roughness Based Scale", &m_ui.reblurSettings.hitDistanceParameters.C, 1.0f, 1000.0f, "%.1f");
-                                    ImGui::SliderFloat("Absolute Value", &m_ui.reblurSettings.hitDistanceParameters.D, -1000.0f, 0.0f, "%.1f");
                                     ImGui::Unindent(12.0f);
                                 }
 
                                 if (ImGui::CollapsingHeader("Antilag"))
                                 {
                                     ImGui::Indent(12.0f);
-                                    ImGui::SliderFloat2("Sigma scale", &m_ui.reblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 3.0f, "%.1f");
-                                    ImGui::SliderFloat2("Power", &m_ui.reblurSettings.antilagSettings.luminanceSensitivity, 1.0f, 3.0f, "%.2f");
+                                    ImGui::SliderFloat("Sigma scale", &m_ui.reblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 3.0f, "%.1f");
+                                    ImGui::SliderFloat("Power", &m_ui.reblurSettings.antilagSettings.luminanceSensitivity, 1.0f, 3.0f, "%.2f");
                                     ImGui::Unindent(12.0f);
                                 }
 
                                 ImGui::Checkbox("Anti-firefly", &m_ui.reblurSettings.enableAntiFirefly);
-                                ImGui::Checkbox("Performance mode", &m_ui.reblurSettings.enablePerformanceMode);
                                 ImGui::Checkbox("Pre-pass only for specular motion estimation", &m_ui.reblurSettings.usePrepassOnlyForSpecularMotionEstimation);
 
                                 ImGui::Unindent(12.0f);
@@ -627,25 +686,36 @@ void PathtracerUI::buildUI(void)
                             {
                                 ImGui::Indent(12.0f);
 
-                                ImGui::SliderFloat2("Pre-pass diffuse blur radius (px)", &m_ui.relaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
-                                ImGui::SliderFloat2("Pre-pass specular blur radius (px)", &m_ui.relaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f, "%.1f");
-                                ImGui::SliderInt2("Diffuse history length (frames)", (int*)&m_ui.relaxSettings.diffuseMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM, "%d");
-                                ImGui::SliderInt2("Specular history length (frames)", (int*)&m_ui.relaxSettings.specularMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM, "%d");
-                                ImGui::SliderInt("History fix (frames)", (int*)&m_ui.relaxSettings.historyFixFrameNum, 0, 3);
-                                ImGui::SliderFloat2("Diffuse phi luminance", &m_ui.relaxSettings.diffusePhiLuminance, 0.0f, 10.0f, "%.1f");
-                                ImGui::SliderFloat2("Specular phi luminance", &m_ui.relaxSettings.specularPhiLuminance, 0.0f, 10.0f, "%.1f");
-                                ImGui::SliderFloat2("Lobe angle fraction", &m_ui.relaxSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Diffuse pre-pass blur radius (px)", &m_ui.relaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Specular pre-pass blur radius (px)", &m_ui.relaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f, "%.1f");
+                                ImGui::SliderFloat("Minimum hit-distance weight", &m_ui.relaxSettings.minHitDistanceWeight, 0.0001f, 0.2f, "%.4f", ImGuiSliderFlags_Logarithmic);
+                                SliderUInt("Diffuse history length (frames)", m_ui.relaxSettings.diffuseMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+                                SliderUInt("Diffuse fast history length (frames)", m_ui.relaxSettings.diffuseMaxFastAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+                                SliderUInt("Specular history length (frames)", m_ui.relaxSettings.specularMaxAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+                                SliderUInt("Specular fast history length (frames)", m_ui.relaxSettings.specularMaxFastAccumulatedFrameNum, 0, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+                                const uint32_t maxFastAccumulatedFrameNum = std::min(m_ui.relaxSettings.diffuseMaxFastAccumulatedFrameNum, m_ui.relaxSettings.specularMaxFastAccumulatedFrameNum);
+                                const uint32_t historyFixFrameNumMax = GetRelaxHistoryFixFrameNumMax(maxFastAccumulatedFrameNum);
+                                m_ui.relaxSettings.historyFixFrameNum = std::min(m_ui.relaxSettings.historyFixFrameNum, historyFixFrameNumMax);
+                                SliderUInt("History fix (frames)", m_ui.relaxSettings.historyFixFrameNum, 0, historyFixFrameNumMax);
+                                ImGui::SliderFloat("Diffuse phi luminance", &m_ui.relaxSettings.diffusePhiLuminance, 0.0f, 10.0f, "%.1f");
+                                ImGui::SliderFloat("Specular phi luminance", &m_ui.relaxSettings.specularPhiLuminance, 0.0f, 10.0f, "%.1f");
+                                ImGui::SliderFloat("Lobe angle fraction", &m_ui.relaxSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                                 ImGui::SliderFloat("Roughness fraction", &m_ui.relaxSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
                                 ImGui::SliderFloat("Specular variance boost", &m_ui.relaxSettings.specularVarianceBoost, 0.0f, 8.0f, "%.2f");
                                 ImGui::SliderFloat("Specular lobe angle slack", &m_ui.relaxSettings.specularLobeAngleSlack, 0.0f, 89.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                                ImGui::SliderFloat("History fix normal power", &m_ui.relaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
-                                ImGui::SliderFloat("History lamping sigma scale", &m_ui.relaxSettings.historyClampingColorBoxSigmaScale, 0.0f, 10.0f, "%.1f");
-                                ImGui::SliderInt("Spatial variance history (frames)", (int*)&m_ui.relaxSettings.spatialVarianceEstimationHistoryThreshold, 0, 10);
-                                ImGui::SliderInt("A-trous iterations", (int*)&m_ui.relaxSettings.atrousIterationNum, 2, 8);
-                                ImGui::SliderFloat2("Min luminance weight", &m_ui.relaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("History fix normal power", &m_ui.relaxSettings.historyFixEdgeStoppingNormalPower, 0.1f, 128.0f, "%.1f");
+                                ImGui::SliderFloat("History clamping sigma scale", &m_ui.relaxSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f, "%.1f");
+                                SliderUInt("Spatial variance history (frames)", m_ui.relaxSettings.spatialVarianceEstimationHistoryThreshold, 0, 10);
+                                SliderUInt("A-trous iterations", m_ui.relaxSettings.atrousIterationNum, 2, 8);
+                                ImGui::SliderFloat("Diffuse minimum luminance weight", &m_ui.relaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Specular minimum luminance weight", &m_ui.relaxSettings.specularMinLuminanceWeight, 0.0f, 1.0f, "%.2f");
                                 ImGui::SliderFloat("Depth threshold", &m_ui.relaxSettings.depthThreshold, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                                ImGui::SliderFloat3("Confidence driven relaxation", &m_ui.relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f, "%.2f");
-                                ImGui::SliderFloat3("Relaxation", &m_ui.relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Confidence relaxation multiplier", &m_ui.relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Confidence luminance relaxation", &m_ui.relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Confidence normal relaxation", &m_ui.relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Luminance relaxation", &m_ui.relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Normal relaxation", &m_ui.relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
+                                ImGui::SliderFloat("Roughness relaxation", &m_ui.relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
 
                                 {
                                     int v = (int)m_ui.relaxSettings.checkerboardMode;
@@ -722,7 +792,7 @@ void PathtracerUI::buildUI(void)
                     if (m_ui.enableAnimations == true)
                     {
                         ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
-                        ImGui::Text("Warning: Reference Mode is auto-disabled when Animation is active.");
+                        ImGui::Text("Warning: Reference Mode cannot converge while Animation is active.");
                         ImGui::PopStyleColor();
                     }
                     break;
@@ -739,7 +809,7 @@ void PathtracerUI::buildUI(void)
         updateAccum |= ImGui::Checkbox("Enable Sky", &m_ui.enableSky);
         if (m_ui.enableSky)
         {
-            updateAccum |= ImGui::Combo("Sky Type", (int*)&m_ui.skyType, "Constant\0Procedural\0EnvironmentMap\0");
+            updateAccum |= EnumCombo("Sky Type", m_ui.skyType, "Constant\0Procedural\0EnvironmentMap\0");
             if (m_ui.skyType != SkyType::Environment_Map)
             {
                 updateAccum |= ImGui::ColorEdit4("Sky Color", m_ui.skyColor, ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_Float);
@@ -756,6 +826,7 @@ void PathtracerUI::buildUI(void)
                     {
                         const bool is_selected = envMap == currentEnvMapFullPath;
                         const std::string envMapStr = envMap.substr(envMap.find_last_of("/\\") + 1);
+                        ImGui::PushID(envMap.c_str());
                         if (ImGui::Selectable(envMapStr.c_str(), is_selected))
                         {
                             updateAccum |= m_app.SetCurrentEnvironmentMapAndLoading(envMap);
@@ -765,6 +836,7 @@ void PathtracerUI::buildUI(void)
                         {
                             ImGui::SetItemDefaultFocus();
                         }
+                        ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
@@ -792,6 +864,7 @@ void PathtracerUI::buildUI(void)
                 for (const auto& light : lights)
                 {
                     bool selected = m_selectedLight == light;
+                    ImGui::PushID(lightIndex);
                     ImGui::Selectable(light->GetName().c_str(), &selected);
                     if (selected)
                     {
@@ -799,6 +872,7 @@ void PathtracerUI::buildUI(void)
                         m_selectedLightIndex = lightIndex;
                         ImGui::SetItemDefaultFocus();
                     }
+                    ImGui::PopID();
                     lightIndex++;
 
                 }
@@ -807,15 +881,23 @@ void PathtracerUI::buildUI(void)
 
             if (m_selectedLight)
             {
-                bool target = (m_ui.targetLight == m_selectedLightIndex);
-                updateAccum |= ImGui::Checkbox("Target this light?", &target);
-                if (target)
+                if (m_selectedLightIndex >= 0 && m_selectedLightIndex < MAX_LIGHTS)
                 {
-                    m_ui.targetLight = m_selectedLightIndex;
+                    bool target = (m_ui.targetLight == m_selectedLightIndex);
+                    updateAccum |= ImGui::Checkbox("Target this light?", &target);
+                    if (target)
+                    {
+                        m_ui.targetLight = m_selectedLightIndex;
+                    }
+                    else
+                    {
+                        m_ui.targetLight = -1;
+                    }
                 }
                 else
                 {
                     m_ui.targetLight = -1;
+                    ImGui::TextDisabled("Only the first %u lights can be targeted.", static_cast<unsigned>(MAX_LIGHTS));
                 }
 
                 updateAccum |= donut::app::LightEditor(*m_selectedLight);
@@ -857,9 +939,10 @@ void PathtracerUI::buildUI(void)
                 ImGui::Indent(12.0f);
 
                 updateAccum |= ImGui::Checkbox("Enable Hair Material Override", &m_ui.enableHairMaterialOverride);
-                updateAccum |= ImGui::Combo("Mode", (int*)&m_ui.hairTechSelection, m_ui.hairModeStrings);
-                updateAccum |= ImGui::Combo("Absorption Model", (int*)&m_ui.hairAbsorptionModel, m_ui.hairAbsorptionModelStrings);
+                updateAccum |= EnumCombo("Mode", m_ui.hairTechSelection, m_ui.hairModeStrings);
+                updateAccum |= EnumCombo("Absorption Model", m_ui.hairAbsorptionModel, m_ui.hairAbsorptionModelStrings);
 
+                ImGui::BeginDisabled(!m_ui.enableHairMaterialOverride);
                 if (m_ui.hairAbsorptionModel == HairAbsorptionModel::Color)
                 {
                     updateAccum |= ImGui::ColorEdit4("Hair Color", m_ui.hairBaseColor, ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_Float);
@@ -874,11 +957,13 @@ void PathtracerUI::buildUI(void)
                 {
                     assert(false);
                 }
+                ImGui::EndDisabled();
 
 #ifdef _DEBUG
                 updateAccum |= ImGui::Checkbox("Analytical Fresnel", &m_ui.analyticalFresnel);
 #endif
 
+                ImGui::BeginDisabled(!m_ui.enableHairMaterialOverride);
                 if (m_ui.hairTechSelection == HairTechSelection::Chiang)
                 {
                     updateAccum |= ImGui::Checkbox("Anisotropic Roughness", &m_ui.anisotropicRoughness);
@@ -902,9 +987,10 @@ void PathtracerUI::buildUI(void)
                 updateAccum |= ImGui::SliderFloat("ior", &m_ui.ior, 1.0f, 3.0f);
 
                 updateAccum |= ImGui::SliderFloat("Surface Offset", &m_ui.cuticleAngleInDegrees, 0.0f, 10.0f);
-            }
+                ImGui::EndDisabled();
 
-            ImGui::Indent(-12.0f);
+                ImGui::Indent(-12.0f);
+            }
         }
 
         ImGui::Indent(-12.0f);
@@ -918,22 +1004,24 @@ void PathtracerUI::buildUI(void)
         updateAccum |= ImGui::Checkbox("Enable SSS", &m_ui.enableSss);
         if (m_ui.enableSss)
         {
-            updateAccum |= ImGui::Checkbox("Enable SSS Indirect Light", &m_ui.enableSssIndirect);
-
             updateAccum |= ImGui::Checkbox("Enable SSS Material Override", &m_ui.enableSssMaterialOverride);
 
 #ifdef _DEBUG
             updateAccum |= ImGui::Checkbox("Use Specular as SSS Color", &m_ui.useMaterialSpecularAlbedoAsSssTransmission);
             updateAccum |= ImGui::Checkbox("Use Diffuse as SSS Color", &m_ui.useMaterialDiffuseAlbedoAsSssTransmission);
 
-            ImGui::SliderInt("SSS DI Sample Count", &m_ui.sssSampleCount, 1, 256);
+            updateAccum |= ImGui::SliderInt("SSS DI Sample Count", &m_ui.sssSampleCount, 1, 256);
 #endif
 
-            updateAccum |= ImGui::Combo("SSS Preset", (int*)&m_ui.sssPreset, m_ui.sssPresetStrings);
+            ImGui::BeginDisabled(!m_ui.enableSssMaterialOverride);
+            updateAccum |= EnumCombo("SSS Preset", m_ui.sssPreset, m_ui.sssPresetStrings);
+            ImGui::BeginDisabled(m_ui.sssPreset != SssScatteringColorPreset::Custom);
             updateAccum |= ImGui::ColorEdit4("SSS Color", m_ui.sssTransmissionColor, ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_Float);
-            updateAccum |= ImGui::ColorEdit4("Radius(mfp)", m_ui.sssScatteringColor, ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_Float);
+            updateAccum |= ImGui::DragFloat3("Radius (MFP)", m_ui.sssScatteringColor, 0.01f, 0.0f, 100.0f, "%.3f");
+            ImGui::EndDisabled();
 
             updateAccum |= ImGui::SliderFloat("Scale", &m_ui.sssScale, 0.0f, 100.0f);
+            ImGui::EndDisabled();
             updateAccum |= ImGui::SliderFloat("Max Sample Radius", &m_ui.maxSampleRadius, 0.0f, 64.0f);
 
             updateAccum |= ImGui::Checkbox("Enable SSS Transmission", &m_ui.enableSssTransmission);
@@ -943,7 +1031,9 @@ void PathtracerUI::buildUI(void)
                 {
                     ImGui::Indent(12.0f);
 
-                    updateAccum |= ImGui::SliderFloat("SSS Anisotropy", &m_ui.sssAnisotropy, -1.0f, 1.0f);
+                    ImGui::BeginDisabled(!m_ui.enableSssMaterialOverride);
+                    updateAccum |= ImGui::SliderFloat("SSS Anisotropy", &m_ui.sssAnisotropy, -0.999f, 0.999f);
+                    ImGui::EndDisabled();
 
                     ImGui::Indent(-12.0f);
                 }
@@ -987,7 +1077,7 @@ void PathtracerUI::buildUI(void)
             updateAccum |= ImGui::Checkbox("Animations", &m_ui.enableAnimations);
             if (m_ui.enableAnimations)
             {
-                ImGui::SliderFloat("Speed(Seconds/Frame)", &m_ui.animationFps, 0.1f, 240.0f);
+                ImGui::SliderFloat("Animation Rate (FPS)", &m_ui.animationFps, 0.1f, 240.0f);
 
                 ImGui::Checkbox("Enable Animation Smoothing", &m_ui.enableAnimationSmoothing);
                 if(m_ui.enableAnimationSmoothing)
@@ -1010,7 +1100,7 @@ void PathtracerUI::buildUI(void)
                     }
                     ImGui::SameLine();
                     ImGui::Text("Animation Keyframe Index Override");
-                    ImGui::SliderFloat("Animation Keyframe Weight Override", &m_ui.animationKeyFrameWeightOverride, 0.1f, 1.0f);
+                    ImGui::SliderFloat("Animation Keyframe Weight Override", &m_ui.animationKeyFrameWeightOverride, 0.0f, 1.0f);
                 }
 #endif
             }
@@ -1022,7 +1112,7 @@ void PathtracerUI::buildUI(void)
     {
         ImGui::Indent(12.0f);
 
-        updateAccum |= ImGui::Combo("Operator", (int*)&m_ui.toneMappingOperator, m_ui.toneMappingOperatorStrings);
+        updateAccum |= EnumCombo("Operator", m_ui.toneMappingOperator, m_ui.toneMappingOperatorStrings);
         ImGui::Checkbox("Clamp", &m_ui.toneMappingClamp);
 
         ImGui::Indent(-12.0f);
