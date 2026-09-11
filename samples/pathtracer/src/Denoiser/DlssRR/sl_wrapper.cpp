@@ -300,6 +300,17 @@ bool SLWrapper::IsSupportedDirectXDevice(const std::vector<sl::Feature>& feature
 #if USE_VK
 bool SLWrapper::IsSupportedVulkanDevice(const std::vector<sl::Feature>& featuresToLoad, VkPhysicalDevice* vkPhysicalDevice)
 {
+#if !USE_VK_STREAMLINE
+    // Native Vulkan does not register its device with SL. Adapter support alone
+    // must not enable features whose device-side initialization never happened.
+    m_dlssAvailable = false;
+    m_dlssrrAvailable = false;
+    m_dlssgAvailable = false;
+    m_reflexAvailable = false;
+    m_pclAvailable = false;
+    log::info("Streamline features disabled: Vulkan interposer is not enabled.");
+    return true;
+#else
     if (!s_SlInitialized)
     {
         log::error("Streamline not initialized");
@@ -323,6 +334,7 @@ bool SLWrapper::IsSupportedVulkanDevice(const std::vector<sl::Feature>& features
     }
 
     return true;
+#endif
 }
 #endif
 
